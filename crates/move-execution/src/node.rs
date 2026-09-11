@@ -28,7 +28,10 @@ use smt::SparseMerkleTree;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tokio::sync::{Mutex, mpsc};
 
@@ -55,7 +58,7 @@ pub const BLOCK_BENEFICIARY: Address =
 pub enum NodeError {
     #[error("invalid transaction bytes: {0}")]
     InvalidTransaction(String),
-    #[error("unsupported transaction type (only legacy, EIP-2930 and EIP-1559 are accepted)")]
+    #[error("unsupported transaction type (only legacy, EIP-2930, EIP-1559 and EIP-7702 are accepted)")]
     UnsupportedTxType,
     #[error("signature recovery failed: {0}")]
     BadSignature(String),
@@ -103,6 +106,30 @@ fn chain_db_dir(state_base: &Path) -> PathBuf {
 /// Shared node handle: what the RPC router and the DAG validator both hold.
 pub type SharedNode = Arc<Mutex<KanariNode>>;
 
+/// Lock-free node counters, served at `GET /metrics` in Prometheus text
+/// format. Uniform across modes: instant seals and commit seals both flow
+/// through `seal_raw`; validators additionally bump `commits_seen`.
+#[derive(Debug, Default)]
+pub struct NodeMetrics {
+    /// Sealed blocks (one transaction each on this chain).
+    pub blocks_sealed: AtomicU64,
+    /// Sealed transactions (equals blocks + replayed ones).
+    pub txs_sealed: AtomicU64,
+    /// DAG commits executed (validator mode only, 0 on single nodes).
+    pub commits_seen: AtomicU64,
+}
+
+impl NodeMetrics {
+    /// Snapshot as `(blocks, txs, commits)`.
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        (
+            self.blocks_sealed.load(Ordering::Relaxed),
+            self.txs_sealed.load(Ordering::Relaxed),
+            self.commits_seen.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Single-node dev chain with instant sealing.
 ///
 /// In validator mode (`kanari-evm-consensus`) `dag_sender` is
@@ -119,6 +146,7 @@ pub struct KanariNode {
     pub(crate) genesis_root: B256,
     pub(crate) faucet_key: Option<B256>,
     pub(crate) dag_sender: Option<mpsc::Sender<Vec<Vec<u8>>>>,
+    pub(crate) metrics: Arc<NodeMetrics>,
 }
 
 impl KanariNode {
@@ -144,6 +172,7 @@ impl KanariNode {
             genesis_root: B256::ZERO,
             faucet_key: None,
             dag_sender: None,
+            metrics: Arc::new(NodeMetrics::default()),
         };
         if node.store.stored_chain_id()?.is_none() {
             if state_base.is_file() {
@@ -201,6 +230,11 @@ impl KanariNode {
     /// True while transactions flow through the DAG mempool.
     pub fn is_validator_mode(&self) -> bool {
         self.dag_sender.is_some()
+    }
+
+    /// Lock-free counters for `GET /metrics`.
+    pub fn metrics(&self) -> &NodeMetrics {
+        &self.metrics
     }    /// Latest sealed block number (0 before the first transaction).
     pub fn block_number(&self) -> u64 {
         self.blocks.last().map(|b| b.number).unwrap_or(0)

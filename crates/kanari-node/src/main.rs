@@ -56,6 +56,103 @@ impl NetworkMode {
     }
 }
 
+/// Verbosity of structured logs (tracing). Banners and key material always
+/// print to stdout regardless of level.
+#[derive(Clone, Debug, Default, ValueEnum)]
+enum LogLevel {
+    Trace,
+    Debug,
+    #[default]
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// Install the global tracing subscriber once. Returns an error string when
+/// the level is invalid (clap constrains this, so it only fires for config
+/// files).
+fn init_logging(level: &str) -> Result<(), String> {
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_new(format!(
+        "kanari_evm_consensus={level},kanari_evm_rpc={level},kanari_evm_node={level}"
+    ))
+    .map_err(|e| format!("invalid log level '{level}': {e}"))?;
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init()
+        .map_err(|e| format!("logging already initialized: {e}"))?;
+    Ok(())
+}
+
+/// Wait for Ctrl+C (or SIGTERM where supported). Dropping into this future
+/// lets `axum::serve(...).with_graceful_shutdown(...)` drain in-flight RPC
+/// calls before the process exits.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .unwrap_or_else(|e| fatal(&format!("failed to listen for shutdown signal: {e}")));
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .unwrap_or_else(|e| fatal(&format!("failed to listen for SIGTERM: {e}")))
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("shutdown signal received, draining...");
+}
+
+/// Validator settings loadable from a TOML file (`--config`). Every field
+/// is optional: CLI flags override file values, built-in defaults cover
+/// the rest.
+///
+/// ```toml
+/// committee = "./dag-keys/dag-committee.json"
+/// key = "./dag-keys/validator-1.key"
+/// data_dir = "./.kanari-evm-validator-1"
+/// rpc_host = "127.0.0.1"
+/// rpc_port = 3501
+/// log_level = "info"
+/// # faucet_key = "0x..."   # same value on ALL validators, or omit
+/// ```
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+struct ValidatorFileConfig {
+    committee: Option<std::path::PathBuf>,
+    key: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
+    rpc_host: Option<String>,
+    rpc_port: Option<u16>,
+    log_level: Option<String>,
+    faucet_key: Option<String>,
+}
+
+fn load_validator_file(path: &std::path::Path) -> ValidatorFileConfig {
+    let raw = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| fatal(&format!("cannot read --config {}: {e}", path.display())));
+    toml::from_str(&raw)
+        .unwrap_or_else(|e| fatal(&format!("invalid --config {}: {e}", path.display())))
+}
+
 /// Kanari EVM node command-line interface.
 #[derive(Parser)]
 #[command(name = "kanari-evm-node", about = "Kanari EVM run server")]
@@ -91,6 +188,9 @@ enum Commands {
         /// Legacy state-file path (overrides --data-dir layout).
         #[arg(long, hide = true)]
         state_file: Option<std::path::PathBuf>,
+        /// Log verbosity (tracing).
+        #[arg(long, value_enum, default_value = "info")]
+        log_level: LogLevel,
     },
     /// Run a local-only dev node: RPC on 127.0.0.1:8545, data in
     /// ./.kanari-evm-local, faucet auto-created.
@@ -98,6 +198,9 @@ enum Commands {
         /// JSON-RPC listen port.
         #[arg(long, default_value = "8545")]
         rpc_port: u16,
+        /// Log verbosity (tracing).
+        #[arg(long, value_enum, default_value = "info")]
+        log_level: LogLevel,
     },
     /// Wipe chain state in the data directory (fresh genesis on next start).
     Reset {
@@ -132,11 +235,13 @@ enum Commands {
     /// validator converges to identical blocks and state roots.
     Validator {
         /// Shared committee file (dag-committee.json from `keygen`).
+        /// Required unless `--config` provides it.
         #[arg(long)]
-        committee: std::path::PathBuf,
+        committee: Option<std::path::PathBuf>,
         /// This validator's secret key file (validator-{i}.key).
+        /// Required unless `--config` provides it.
         #[arg(long)]
-        key: std::path::PathBuf,
+        key: Option<std::path::PathBuf>,
         /// Data directory for chain state (defaults to
         /// ./.kanari-evm-validator-{i}).
         #[arg(long)]
@@ -145,13 +250,20 @@ enum Commands {
         #[arg(long)]
         rpc_port: Option<u16>,
         /// JSON-RPC listen host/IP.
-        #[arg(long, default_value = "127.0.0.1")]
-        rpc_host: String,
+        #[arg(long)]
+        rpc_host: Option<String>,
         /// Shared dev faucet secret (32-byte hex). All validators must use
         /// the SAME value (or none) or genesis — and hence state roots —
         /// will diverge. No faucet is auto-created in validator mode.
         #[arg(long)]
         faucet_key: Option<String>,
+        /// TOML config file (see ValidatorFileConfig docs). CLI flags
+        /// override file values; required fields missing from both fail.
+        #[arg(long)]
+        config: Option<std::path::PathBuf>,
+        /// Log verbosity (tracing).
+        #[arg(long, value_enum)]
+        log_level: Option<LogLevel>,
     },
 }
 
@@ -214,6 +326,7 @@ struct StartOptions {
     state_file: std::path::PathBuf,
     faucets: Vec<(Address, u128)>,
     faucet_key: Option<B256>,
+    log_level: LogLevel,
 }
 
 fn parse_secret(hex: &str) -> B256 {
@@ -223,6 +336,7 @@ fn parse_secret(hex: &str) -> B256 {
 }
 
 async fn run(opts: StartOptions) {
+    init_logging(opts.log_level.as_str()).unwrap_or_else(|e| fatal(&e));
     if !matches!(opts.network, NetworkMode::Devnet) {
         fatal(&format!(
             "--network {} has no EVM chain spec yet; use devnet",
@@ -279,10 +393,7 @@ async fn run(opts: StartOptions) {
     if let Some((addr, secret)) = faucet_secret {
         node.set_faucet_key(secret)
             .unwrap_or_else(|e| fatal(&format!("failed to store faucet key: {e}")));
-        println!(
-            "faucet funded with {} ETH for {addr}",
-            FAUCET_GENESIS_ETH
-        );
+        println!("faucet funded with {} ETH for {addr}", FAUCET_GENESIS_ETH);
     } else {
         match node.load_faucet_key() {
             Ok(true) => println!(
@@ -321,8 +432,10 @@ async fn run(opts: StartOptions) {
         .await
         .unwrap_or_else(|e| fatal(&format!("failed to bind {addr}: {e}")));
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
+    tracing::info!("node stopped cleanly");
 }
 
 fn cmd_reset(data_dir: Option<std::path::PathBuf>, force: bool) {
@@ -370,18 +483,13 @@ fn cmd_reset(data_dir: Option<std::path::PathBuf>, force: bool) {
     );
 }
 
-fn cmd_keygen(
-    node_count: usize,
-    output_dir: std::path::PathBuf,
-    host: &str,
-    base_dag_port: u16,
-) {
+fn cmd_keygen(node_count: usize, output_dir: std::path::PathBuf, host: &str, base_dag_port: u16) {
     use kanari_evm_consensus::generate_committee;
     let host: std::net::IpAddr = host
         .parse()
         .unwrap_or_else(|_| fatal("--host needs an IP address"));
-    let committee =
-        generate_committee(node_count, host, base_dag_port, &output_dir).unwrap_or_else(|e| {
+    let committee = generate_committee(node_count, host, base_dag_port, &output_dir)
+        .unwrap_or_else(|e| {
             fatal(&format!("keygen failed: {e}"));
         });
     println!(
@@ -390,9 +498,15 @@ fn cmd_keygen(
         output_dir.display()
     );
     for entry in &committee.authorities {
-        println!("  {}  {}  {}", entry.id, entry.dag_address, entry.public_key);
+        println!(
+            "  {}  {}  {}",
+            entry.id, entry.dag_address, entry.public_key
+        );
     }
-    println!("secret keys: validator-{{1..{}}}.key (DO NOT SHARE)", committee.len());
+    println!(
+        "secret keys: validator-{{1..{}}}.key (DO NOT SHARE)",
+        committee.len()
+    );
 }
 
 async fn run_validator(
@@ -406,13 +520,16 @@ async fn run_validator(
     use kanari_evm_consensus::DEFAULT_ROUND_TIMEOUT;
     use kanari_evm_consensus::committee::load_validator;
 
-    let identity =
-        load_validator(&committee, &key).unwrap_or_else(|e| fatal(&format!("bad committee/key: {e}")));
+    let identity = load_validator(&committee, &key)
+        .unwrap_or_else(|e| fatal(&format!("bad committee/key: {e}")));
     let number = identity.index + 1;
-    let data_dir =
-        data_dir.unwrap_or_else(|| std::path::PathBuf::from(format!("./.kanari-evm-validator-{number}")));
+    let data_dir = data_dir
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("./.kanari-evm-validator-{number}")));
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        fatal(&format!("cannot create data dir {}: {e}", data_dir.display()));
+        fatal(&format!(
+            "cannot create data dir {}: {e}",
+            data_dir.display()
+        ));
     }
     let rpc_port = rpc_port.unwrap_or_else(|| identity.own_address.port() + 1);
 
@@ -433,8 +550,8 @@ async fn run_validator(
         None => KanariChainSpec::devnet(),
     };
     let state_file = data_dir.join("state.json");
-    let mut node =
-        KanariNode::open(spec, &state_file).unwrap_or_else(|e| fatal(&format!("failed to open node: {e}")));
+    let mut node = KanariNode::open(spec, &state_file)
+        .unwrap_or_else(|e| fatal(&format!("failed to open node: {e}")));
     if let Some(secret) = faucet_key {
         node.set_faucet_key(secret)
             .unwrap_or_else(|e| fatal(&format!("failed to store faucet key: {e}")));
@@ -444,7 +561,7 @@ async fn run_validator(
     }
 
     let shared = Arc::new(Mutex::new(node));
-    let _validator = ValidatorNode::spawn(
+    let validator = ValidatorNode::spawn(
         shared.clone(),
         ValidatorOpts {
             committee_path: committee,
@@ -457,7 +574,10 @@ async fn run_validator(
     .unwrap_or_else(|e| fatal(&format!("failed to join DAG mesh: {e}")));
 
     println!("========================================");
-    println!("Kanari EVM Validator {} ({})", identity.id, identity.own_address);
+    println!(
+        "Kanari EVM Validator {} ({})",
+        identity.id, identity.own_address
+    );
     println!("========================================");
     println!("RPC URL:   http://{rpc_host}:{rpc_port}");
     println!("Chain ID:  {KANARI_EVM_DEV_CHAIN_ID}");
@@ -475,8 +595,11 @@ async fn run_validator(
         .await
         .unwrap_or_else(|e| fatal(&format!("failed to bind {addr}: {e}")));
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
+    validator.shutdown().await;
+    tracing::info!("validator stopped cleanly");
 }
 
 #[tokio::main]
@@ -491,6 +614,7 @@ async fn main() {
             faucet,
             faucet_key,
             state_file,
+            log_level,
         } => {
             let data_dir = data_dir.unwrap_or_else(default_data_dir);
             let state_path = state_file.unwrap_or_else(|| data_dir.join("state.json"));
@@ -502,10 +626,14 @@ async fn main() {
                 state_file: state_path,
                 faucets: parse_faucet_args(&faucet),
                 faucet_key: faucet_key.as_deref().map(parse_secret),
+                log_level,
             })
             .await;
         }
-        Commands::Local { rpc_port } => {
+        Commands::Local {
+            rpc_port,
+            log_level,
+        } => {
             let data_dir = std::path::PathBuf::from("./.kanari-evm-local");
             let state_path = data_dir.join("state.json");
             println!("Starting local node: RPC on 127.0.0.1:{rpc_port} (LAN access disabled)");
@@ -517,6 +645,7 @@ async fn main() {
                 state_file: state_path,
                 faucets: Vec::new(),
                 faucet_key: None,
+                log_level,
             })
             .await;
         }
@@ -534,14 +663,33 @@ async fn main() {
             rpc_port,
             rpc_host,
             faucet_key,
+            config,
+            log_level,
         } => {
+            // Precedence: CLI flag > TOML file > built-in default.
+            let file = config
+                .as_deref()
+                .map(load_validator_file)
+                .unwrap_or_default();
+            let committee = committee
+                .or(file.committee)
+                .unwrap_or_else(|| fatal("--committee is required (or set committee in --config)"));
+            let key = key
+                .or(file.key)
+                .unwrap_or_else(|| fatal("--key is required (or set key in --config)"));
+            let rpc_host = rpc_host
+                .or(file.rpc_host)
+                .unwrap_or_else(|| "127.0.0.1".to_string());
+            let level = log_level.map(|l| l.as_str().to_string()).or(file.log_level);
+            init_logging(level.as_deref().unwrap_or("info")).unwrap_or_else(|e| fatal(&e));
+            let secret = faucet_key.or(file.faucet_key).as_deref().map(parse_secret);
             run_validator(
                 committee,
                 key,
-                data_dir,
-                rpc_port,
+                data_dir.or(file.data_dir),
+                rpc_port.or(file.rpc_port),
                 rpc_host,
-                faucet_key.as_deref().map(parse_secret),
+                secret,
             )
             .await;
         }

@@ -4,19 +4,22 @@
 //! Minimal Ethereum JSON-RPC over HTTP for the Kanari dev chain.
 //!
 //! Covers what wallets (e.g. MetaMask) and scripts need: chain id, balances,
-//! nonces, gas price, storage slots, sending raw transactions
-//! (instant-sealed), receipts, blocks and read-only calls. `eth_getLogs`
-//! returns the empty set (receipts carry no logs on this dev chain) so that
-//! dApp libraries finish loading instead of failing. Anything else returns
-//! `-32601 Method not found`. Block hashes are deterministic placeholders
+//! nonces, storage slots, logs, sending raw transactions (instant-sealed),
+//! receipts, blocks and read-only calls. Anything else returns `-32601
+//! Method not found`. Block hashes are deterministic placeholders
 //! (see `node.rs`).
 
 use kanari_evm_move_execution::{
     execution::CallRequest,
-    node::{DEFAULT_BASE_FEE_WEI, NodeError, SharedNode},
+    node::{DEFAULT_BASE_FEE_WEI, KanariNode, NodeError, SharedNode},
+    render_sealed_log,
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{get, post},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -115,6 +118,79 @@ fn take_parsed<T>(
     }
 }
 
+/// Resolve a log filter's block range to `(from, to)` block numbers.
+/// `blockHash`, when present, pins both ends to that block.
+fn log_block_range(
+    filter: &serde_json::Map<String, Value>,
+    latest: u64,
+    node: &KanariNode,
+) -> Result<(u64, u64), String> {
+    if let Some(hash_v) = filter.get("blockHash")
+        && !hash_v.is_null()
+    {
+        let hash = parse_hash(hash_v)?;
+        let number = node
+            .block_by_hash(&hash)
+            .map(|b| b.number)
+            .ok_or_else(|| "unknown blockHash".to_string())?;
+        return Ok((number, number));
+    }
+    let bound = |key: &str, fallback: u64| -> Result<u64, String> {
+        match filter.get(key) {
+            None | Some(Value::Null) => Ok(fallback),
+            Some(Value::String(s)) if s == "latest" || s == "pending" => Ok(latest),
+            Some(Value::String(s)) if s == "earliest" => Ok(0),
+            Some(v) => parse_u64(v),
+        }
+    };
+    let from = bound("fromBlock", latest)?;
+    let to = bound("toBlock", latest)?;
+    Ok((from.min(to), to.max(from).min(latest)))
+}
+
+/// Parse the log filter's address field: absent (match all), one address,
+/// or an array of addresses.
+fn log_addresses(filter: &serde_json::Map<String, Value>) -> Result<Option<Vec<Address>>, String> {
+    match filter.get("address") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(addrs)) => addrs.iter().map(parse_address).collect::<Result<Vec<_>, _>>().map(Some),
+        Some(v) => parse_address(v).map(|a| Some(vec![a])),
+    }
+}
+
+/// Parse the log filter's topics: positional array, each entry null
+/// (wildcard), one hash, or an array of hashes (OR semantics).
+fn log_topics(
+    filter: &serde_json::Map<String, Value>,
+) -> Result<Vec<Option<Vec<B256>>>, String> {
+    let Some(topics) = filter.get("topics") else {
+        return Ok(Vec::new());
+    };
+    let arr = topics
+        .as_array()
+        .ok_or_else(|| "topics must be an array".to_string())?;
+    arr.iter()
+        .map(|entry| match entry {
+            Value::Null => Ok(None),
+            Value::Array(options) => options
+                .iter()
+                .map(parse_hash)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some),
+            v => parse_hash(v).map(|h| Some(vec![h])),
+        })
+        .collect()
+}
+
+/// Standard topic matching: every filter position must be a wildcard or
+/// contain the log's topic at that position. Extra log topics are ignored.
+fn topics_match(filter: &[Option<Vec<B256>>], topics: &[B256]) -> bool {
+    filter.iter().enumerate().all(|(i, slot)| match slot {
+        None => true,
+        Some(options) => topics.get(i).is_some_and(|t| options.contains(t)),
+    })
+}
+
 /// Build a [`CallRequest`] from an `eth_call`/`eth_estimateGas` params object.
 /// Free function (not a method): `CallRequest` is owned by the execution
 /// layer, and inherent impls cannot cross crate boundaries.
@@ -139,14 +215,46 @@ fn node_error(id: Value, e: NodeError) -> RpcResponse {
     err(id, -32000, e.to_string())
 }
 
-/// Build the axum router: JSON-RPC at `POST /`, block explorer at `GET /`.
+/// Build the axum router: JSON-RPC at `POST /`, block explorer at `GET /`,
+/// Prometheus metrics at `GET /metrics`.
 pub fn router(node: SharedNode) -> Router {
     Router::new()
         .route(
             "/",
             post(handle_rpc).options(handle_options).get(explorer_page),
         )
+        .route("/metrics", get(metrics_page))
         .with_state(node)
+}
+
+/// Prometheus text exposition of node counters plus the live head block.
+/// Uniform across modes: instant and commit seals both flow through
+/// `seal_raw`; `commits_seen` stays 0 on single nodes.
+async fn metrics_page(State(node): State<SharedNode>) -> impl axum::response::IntoResponse {
+    let node = node.lock().await;
+    let (blocks, txs, commits) = node.metrics().snapshot();
+    let body = format!(
+        "# HELP kanari_evm_block_number Latest sealed block number.\n\
+         # TYPE kanari_evm_block_number gauge\n\
+         kanari_evm_block_number {}\n\
+         # HELP kanari_evm_blocks_sealed_total Sealed blocks (one tx each).\n\
+         # TYPE kanari_evm_blocks_sealed_total counter\n\
+         kanari_evm_blocks_sealed_total {}\n\
+         # HELP kanari_evm_txs_sealed_total Sealed transactions.\n\
+         # TYPE kanari_evm_txs_sealed_total counter\n\
+         kanari_evm_txs_sealed_total {}\n\
+         # HELP kanari_evm_commits_seen_total DAG commits executed (0 on single nodes).\n\
+         # TYPE kanari_evm_commits_seen_total counter\n\
+         kanari_evm_commits_seen_total {}\n",
+        node.block_number(),
+        blocks,
+        txs,
+        commits
+    );
+    (
+        [("Content-Type", "text/plain; version=0.0.4")],
+        body,
+    )
 }
 
 /// Static single-file explorer UI (talks to this same origin, so no CORS
@@ -203,16 +311,14 @@ async fn inner_handle_rpc(node: SharedNode, body: Value) -> Json<Value> {
                 .iter()
                 .map(|item| item.get("method").and_then(|m| m.as_str()).unwrap_or("?"))
                 .collect();
-            eprintln!("rpc batch len={} methods={names:?}", batch.len());
+            tracing::debug!(len = batch.len(), methods = ?names, "rpc batch");
         }
         Value::Object(_) => {
-            eprintln!(
-                "rpc {} params={}",
-                body.get("method").and_then(|m| m.as_str()).unwrap_or("?"),
-                summarize(body.get("params").unwrap_or(&Value::Null)),
-            );
+            let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("?");
+            let params = summarize(body.get("params").unwrap_or(&Value::Null));
+            tracing::debug!(method, %params, "rpc call");
         }
-        _ => eprintln!("rpc <non-object>"),
+        _ => tracing::debug!("rpc <non-object>"),
     }
     match body {
         Value::Array(batch) => {
@@ -262,9 +368,10 @@ async fn inner_handle_rpc(node: SharedNode, body: Value) -> Json<Value> {
 }
 
 async fn dispatch(node: &SharedNode, req: RpcRequest) -> RpcResponse {
+    let method = req.method.clone();
     let resp = dispatch_inner(node, req).await;
     if let Some(err) = &resp.error {
-        eprintln!("rpc -> err {} {}", err.code, err.message);
+        tracing::debug!(code = err.code, message = %err.message, %method, "rpc error");
     }
     resp
 }
@@ -434,10 +541,37 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             }
         }
         "eth_getLogs" => {
-            // Receipts carry no logs on this dev chain, so any filter
-            // matches the empty set. Returning `[]` (instead of "method not
-            // found") keeps wallets and dApp libraries loading.
-            ok(id, json!([]))
+            // params: [{fromBlock?, toBlock?, blockHash?, address?, topics?}].
+            // Block tags: "latest" (default), "earliest", "pending" (= latest)
+            // or a 0x quantity. Address: single 0x address or an array.
+            // Topics: positional array, each null (wildcard), one 0x hash,
+            // or an array of 0x hashes (OR).
+            let arr = params.as_array().cloned().unwrap_or_default();
+            let filter = arr.first().and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let node = node.lock().await;
+            let latest = node.block_number();
+            let range = match log_block_range(&filter, latest, &node) {
+                Ok(r) => r,
+                Err(e) => return err(id, -32602, e),
+            };
+            let addresses = match log_addresses(&filter) {
+                Ok(a) => a,
+                Err(e) => return err(id, -32602, e),
+            };
+            let topics = match log_topics(&filter) {
+                Ok(t) => t,
+                Err(e) => return err(id, -32602, e),
+            };
+            let out: Vec<Value> = node
+                .logs_in_range(range.0, range.1)
+                .iter()
+                .filter(|log| {
+                    addresses.as_ref().is_none_or(|addrs| addrs.contains(&log.address))
+                        && topics_match(&topics, &log.topics)
+                })
+                .map(render_sealed_log)
+                .collect();
+            ok(id, json!(out))
         }
         "eth_getBlockByHash" => {
             let arr = params.as_array().cloned().unwrap_or_default();

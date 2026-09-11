@@ -15,10 +15,10 @@ use crate::node::{
 };
 use crate::precompiles::{KanariEvmParams, build_kanari_evm};
 use crate::views::{block_hash, next_parent_hash};
-use kanari_evm_storage::{SealedBlock, StoredReceipt};
 use alloy_consensus::{TxEnvelope, transaction::SignerRecoverable};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256, keccak256};
+use kanari_evm_storage::{SealedBlock, StoredLog, StoredReceipt};
 use revm::{
     context::TxEnv,
     context_interface::result::{ExecutionResult, Output},
@@ -27,6 +27,7 @@ use revm::{
     handler::{ExecuteEvm, MainnetContext},
     primitives::TxKind as RevmTxKind,
 };
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl KanariNode {
@@ -158,7 +159,7 @@ impl KanariNode {
             .map_err(|e| NodeError::Execution(e.to_string()))?;
         self.db.commit(output.state);
         let state_root = self.rebuild_smt()?;
-        let (success, gas_used, created) = execution_summary(&output.result);
+        let (success, gas_used, created, logs) = execution_summary(&output.result);
         let hash = keccak256(&raw);
         let block_hash = block_hash(parent_hash, number, timestamp);
         let block = SealedBlock {
@@ -178,10 +179,13 @@ impl KanariNode {
             from: prepared.sender,
             to: prepared.to,
             contract_address: created,
+            logs,
         };
         self.store.save_block(&block, &[(&hash, &receipt)])?;
         self.blocks.push(block);
         self.receipts.insert(hash, receipt);
+        self.metrics.blocks_sealed.fetch_add(1, Ordering::Relaxed);
+        self.metrics.txs_sealed.fetch_add(1, Ordering::Relaxed);
         Ok(hash)
     }
 }
@@ -292,7 +296,26 @@ impl PreparedTx {
                 };
                 (tx.chain_id, inner)
             }
-            TxEnvelope::Eip4844(_) | TxEnvelope::Eip7702(_) => {
+            TxEnvelope::Eip7702(signed) => {
+                let tx = signed.tx();
+                let mut inner = TxEnv {
+                    caller: sender,
+                    gas_limit: tx.gas_limit,
+                    gas_price: tx.max_fee_per_gas,
+                    kind: RevmTxKind::Call(tx.to),
+                    value: tx.value,
+                    data: tx.input.clone(),
+                    nonce: tx.nonce,
+                    chain_id: Some(tx.chain_id),
+                    gas_priority_fee: Some(tx.max_priority_fee_per_gas),
+                    access_list: tx.access_list.clone(),
+                    tx_type: 4, // EIP-7702: revm keys auth handling off this field
+                    ..Default::default()
+                };
+                inner.set_signed_authorization(tx.authorization_list.clone());
+                (tx.chain_id, inner)
+            }
+            TxEnvelope::Eip4844(_) => {
                 return Err(NodeError::UnsupportedTxType);
             }
         };
@@ -318,17 +341,28 @@ fn alloy_kind(to: &AlloyTxKind) -> RevmTxKind {
     }
 }
 
-fn execution_summary(out: &ExecutionResult) -> (bool, u64, Option<Address>) {
+fn execution_summary(out: &ExecutionResult) -> (bool, u64, Option<Address>, Vec<StoredLog>) {
     match out {
-        ExecutionResult::Success { gas, output, .. } => {
+        ExecutionResult::Success {
+            gas, output, logs, ..
+        } => {
             let created = match output {
                 Output::Create(_, addr) => *addr,
                 Output::Call(_) => None,
             };
-            (true, gas.tx_gas_used(), created)
+            let logs = logs
+                .iter()
+                .map(|log| StoredLog {
+                    address: log.address,
+                    topics: log.topics().to_vec(),
+                    data: log.data.data.clone(),
+                })
+                .collect();
+            (true, gas.tx_gas_used(), created, logs)
         }
-        ExecutionResult::Revert { gas, .. } => (false, gas.tx_gas_used(), None),
-        ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), None),
+        // Reverted logs are discarded by consensus: receipts stay log-free.
+        ExecutionResult::Revert { gas, .. } => (false, gas.tx_gas_used(), None, Vec::new()),
+        ExecutionResult::Halt { gas, .. } => (false, gas.tx_gas_used(), None, Vec::new()),
     }
 }
 

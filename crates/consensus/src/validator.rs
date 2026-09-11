@@ -179,6 +179,12 @@ impl ValidatorNode {
             let mut last_ts: u64 = 0;
             let mut pending: Vec<Bytes> = Vec::new();
             while let Some(commit) = commit_rx.recv().await {
+                exec_node
+                    .lock()
+                    .await
+                    .metrics()
+                    .commits_seen
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let ts = commit_timestamp(&commit).max(last_ts);
                 last_ts = ts;
                 pending.extend(
@@ -189,8 +195,10 @@ impl ValidatorNode {
                 if pending.len() > MAX_PENDING_PAYLOADS {
                     let drop_n = pending.len() - MAX_PENDING_PAYLOADS;
                     pending.drain(..drop_n);
-                    eprintln!(
-                        "validator {validator_id}: dropping {drop_n} overfull pending payloads"
+                    tracing::warn!(
+                        validator = %validator_id,
+                        drop_n,
+                        "dropping overfull pending payloads"
                     );
                 }
                 loop {
@@ -200,8 +208,10 @@ impl ValidatorNode {
                         match exec_node.lock().await.seal_committed(raw.clone(), ts) {
                             Ok(_) => progress = true,
                             Err(e) => {
-                                eprintln!(
-                                    "validator {validator_id}: payload deferred, retrying on next commit: {e}"
+                                tracing::debug!(
+                                    validator = %validator_id,
+                                    error = %e,
+                                    "payload deferred, retrying on next commit"
                                 );
                                 still_pending.push(raw);
                             }
@@ -215,12 +225,12 @@ impl ValidatorNode {
             }
         });
 
-        eprintln!(
-            "validator {} (authority {}) joined DAG mesh on {} ({} validators)",
-            loaded.id,
-            loaded.index,
-            loaded.own_address,
-            committee.len()
+        tracing::info!(
+            validator = %loaded.id,
+            authority = loaded.index,
+            addr = %loaded.own_address,
+            committee = committee.len(),
+            "joined DAG mesh"
         );
         Ok(Self {
             node,
@@ -231,6 +241,14 @@ impl ValidatorNode {
     /// The underlying node (same handle the RPC router serves).
     pub fn node(&self) -> &SharedNode {
         &self.node
+    }
+
+    /// Stop the DAG syncer tasks. Pair with axum graceful shutdown so
+    /// in-flight RPC calls drain first; uncommitted DAG rounds resume from
+    /// the WAL on the next start, and sealed EVM state replays from the
+    /// chain store.
+    pub async fn shutdown(self) {
+        self._syncer.shutdown().await;
     }
 }
 

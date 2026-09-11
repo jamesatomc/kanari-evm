@@ -55,6 +55,9 @@ thiserror = "2.0.20"
 # raw bytes via Signer::from_bytes, never through its Rng-trait API).
 rand = "0.10.2"
 reqwest = { version = "0.13.5", features = ["json"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+toml = "1.1.6"
 
 # Internal crates.
 kanari-evm-consensus = { path = "crates/consensus" }

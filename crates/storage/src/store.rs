@@ -51,6 +51,19 @@ pub struct StoredReceipt {
     pub from: Address,
     pub to: Option<Address>,
     pub contract_address: Option<Address>,
+    /// Logs emitted by the transaction (empty on revert — reverted logs are
+    /// discarded by consensus). Defaults for receipts sealed before logs
+    /// were stored.
+    #[serde(default)]
+    pub logs: Vec<StoredLog>,
+}
+
+/// One EVM log: emitting contract, topics and unindexed data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredLog {
+    pub address: Address,
+    pub topics: Vec<B256>,
+    pub data: Bytes,
 }
 /// Precompile-free key helpers live here so the layout stays in one place.
 mod keys {
