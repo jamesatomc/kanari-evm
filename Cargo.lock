@@ -1517,7 +1517,7 @@ dependencies = [
 [[package]]
 name = "consensus"
 version = "0.1.0"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "dag",
  "serde",
@@ -1808,7 +1808,7 @@ dependencies = [
 [[package]]
 name = "dag"
 version = "0.1.0"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "bincode",
  "blake2 0.10.6",
@@ -2243,7 +2243,7 @@ dependencies = [
 [[package]]
 name = "enum-compat-util"
 version = "0.1.0"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "serde_yaml",
 ]
@@ -3253,7 +3253,7 @@ dependencies = [
 [[package]]
 name = "kanari-common"
 version = "0.2.8"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "dirs",
  "serde_yaml",
@@ -3262,7 +3262,7 @@ dependencies = [
 [[package]]
 name = "kanari-crypto"
 version = "0.2.8"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3303,7 +3303,7 @@ dependencies = [
 [[package]]
 name = "kanari-db-common"
 version = "0.2.8"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "anyhow",
  "dirs",
@@ -3320,7 +3320,7 @@ dependencies = [
  "dag",
  "kanari-evm-move-execution",
  "kanari-evm-storage",
- "rand 0.8.8",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3593,7 +3593,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "minibytes"
 version = "0.1.0"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "memmap2",
  "serde",
@@ -3648,7 +3648,7 @@ dependencies = [
 [[package]]
 name = "move-core-types"
 version = "0.0.4"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "anyhow",
  "bcs",
@@ -3670,7 +3670,7 @@ dependencies = [
 [[package]]
 name = "move-proc-macros"
 version = "0.1.0"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "enum-compat-util",
  "quote",
@@ -5656,7 +5656,7 @@ dependencies = [
 [[package]]
 name = "smt"
 version = "0.2.8"
-source = "git+https://github.com/jamesatomc/kanari-sdk.git#a620725ce036dd2dbff54ac86ea562806480963b"
+source = "git+https://github.com/jamesatomc/kanari-sdk.git?rev=a620725ce036dd2dbff54ac86ea562806480963b#a620725ce036dd2dbff54ac86ea562806480963b"
 dependencies = [
  "anyhow",
  "kanari-crypto",

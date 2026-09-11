@@ -32,13 +32,13 @@ documentation = "https://docs.kanarinetwork.site"
 # storage, networking) remains a Linux CI/docker target; revisit the
 # `reth-node-builder` git dependency then.
 revm = "43.0.2"
-kanari-crypto = { git = "https://github.com/jamesatomc/kanari-sdk.git" }
-kanari-db-common = { git = "https://github.com/jamesatomc/kanari-sdk.git" }
-smt = { git = "https://github.com/jamesatomc/kanari-sdk.git" }
+kanari-crypto = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
+kanari-db-common = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
+smt = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 # Mysticeti DAG consensus as the ordering layer (in-process cores for tests;
 # networked validators reuse the same Core/Committer types via the syncer).
-dag = { git = "https://github.com/jamesatomc/kanari-sdk.git" }
-consensus = { git = "https://github.com/jamesatomc/kanari-sdk.git" }
+dag = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
+consensus = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 tokio = { version = "1.53.1", features = ["full"] }
 axum = "0.8.9"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -51,8 +51,9 @@ alloy-signer = "2"
 alloy-signer-local = "2.4.2"
 clap = { version = "4.6.6", features = ["derive"] }
 thiserror = "2.0.20"
-# Ed25519 DAG committee key generation (must match mysticeti's rand 0.8).
-rand = "=0.8.8"
+# Committee key randomness (any recent rand works: keys enter mysticeti as
+# raw bytes via Signer::from_bytes, never through its Rng-trait API).
+rand = "0.10.2"
 reqwest = { version = "0.13.5", features = ["json"] }
 
 # Internal crates.

@@ -26,7 +26,6 @@ use dag::{
     committee::{AuthorityInfo, Committee},
     crypto::{PublicKey, Signer},
 };
-use rand::{SeedableRng, rngs::StdRng};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -137,10 +136,11 @@ pub fn generate_committee(
         )));
     }
     std::fs::create_dir_all(out_dir).map_err(|e| CommitteeError::Io(e.to_string()))?;
-    let mut rng = StdRng::from_entropy();
     let mut authorities = Vec::with_capacity(node_count);
     for i in 0..node_count {
-        let signer = Signer::new(&mut rng);
+        // Random 32 bytes from ANY rand version: from_bytes (not Signer::new)
+        // keeps us decoupled from the exact rand version mysticeti pins.
+        let signer = Signer::from_bytes(rand::random());
         let id = format!("0x{}", i + 1);
         let port = base_dag_port
             .checked_add((i as u16).saturating_mul(10))
@@ -159,8 +159,8 @@ pub fn generate_committee(
         let _ = load_signer(&key_path)?;
     }
     let committee = DagCommittee { authorities };
-    let committee_json = serde_json::to_string_pretty(&committee)
-        .map_err(|e| CommitteeError::Io(e.to_string()))?;
+    let committee_json =
+        serde_json::to_string_pretty(&committee).map_err(|e| CommitteeError::Io(e.to_string()))?;
     std::fs::write(out_dir.join(COMMITTEE_FILENAME), committee_json)
         .map_err(|e| CommitteeError::Io(e.to_string()))?;
     Ok(committee)
@@ -172,8 +172,7 @@ pub fn load_validator(
     committee_path: &Path,
     key_path: &Path,
 ) -> Result<LoadedValidator, CommitteeError> {
-    let raw =
-        std::fs::read(committee_path).map_err(|e| CommitteeError::Io(e.to_string()))?;
+    let raw = std::fs::read(committee_path).map_err(|e| CommitteeError::Io(e.to_string()))?;
     let committee: DagCommittee =
         serde_json::from_slice(&raw).map_err(|e| CommitteeError::Invalid(e.to_string()))?;
     let signer = load_signer(key_path)?;
@@ -196,7 +195,11 @@ pub fn load_validator(
         authority: Authority::new(index as u64),
         signer,
         committee: committee.to_mysticeti()?,
-        dag_addresses: committee.authorities.iter().map(|e| e.dag_address).collect(),
+        dag_addresses: committee
+            .authorities
+            .iter()
+            .map(|e| e.dag_address)
+            .collect(),
         own_address: entry.dag_address,
     })
 }
@@ -223,8 +226,7 @@ pub fn key_filename(validator_number: usize) -> PathBuf {
 }
 
 fn encode_pubkey(key: &PublicKey) -> Result<String, CommitteeError> {
-    let value =
-        serde_json::to_value(key).map_err(|e| CommitteeError::Invalid(e.to_string()))?;
+    let value = serde_json::to_value(key).map_err(|e| CommitteeError::Invalid(e.to_string()))?;
     let bytes: Vec<u8> =
         serde_json::from_value(value).map_err(|e| CommitteeError::Invalid(e.to_string()))?;
     if bytes.len() != 32 {
@@ -265,13 +267,10 @@ mod tests {
 
     #[test]
     fn keygen_roundtrip_and_layout() {
-        let dir = std::env::temp_dir().join(format!(
-            "kanari-evm-committee-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("kanari-evm-committee-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let committee = generate_committee(4, IpAddr::from([127, 0, 0, 1]), 3500, &dir)
-            .expect("keygen works");
+        let committee =
+            generate_committee(4, IpAddr::from([127, 0, 0, 1]), 3500, &dir).expect("keygen works");
         assert_eq!(committee.len(), 4);
         assert!(dir.join(COMMITTEE_FILENAME).is_file());
         // 10-port stride, 1-based ids.
@@ -300,10 +299,8 @@ mod tests {
 
     #[test]
     fn keygen_rejects_small_committees() {
-        let dir = std::env::temp_dir().join(format!(
-            "kanari-evm-committee-small-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("kanari-evm-committee-small-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let err = generate_committee(3, IpAddr::from([127, 0, 0, 1]), 3500, &dir)
             .expect_err("3 validators must be rejected");
@@ -318,11 +315,13 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         generate_committee(4, IpAddr::from([127, 0, 0, 1]), 3500, &dir).expect("keygen");
-        let mut rng = StdRng::from_entropy();
-        let foreign = Signer::new(&mut rng);
+        let foreign = Signer::from_bytes(rand::random());
         let foreign_path = dir.join("foreign.key");
-        std::fs::write(&foreign_path, serde_json::to_string(&foreign).expect("json"))
-            .expect("write");
+        std::fs::write(
+            &foreign_path,
+            serde_json::to_string(&foreign).expect("json"),
+        )
+        .expect("write");
         let err = match load_validator(&dir.join(COMMITTEE_FILENAME), &foreign_path) {
             Ok(_) => panic!("foreign key must not match"),
             Err(e) => e,
