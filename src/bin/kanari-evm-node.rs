@@ -106,6 +106,51 @@ enum Commands {
         #[arg(long, default_value = "false")]
         force: bool,
     },
+    /// Generate a DAG validator committee: shared dag-committee.json plus
+    /// one validator-{i}.key secret per validator (kanari-sdk
+    /// `consensus-keygen` equivalent).
+    Keygen {
+        /// Number of validators (minimum 4 for quorum).
+        #[arg(long, default_value = "4")]
+        node_count: usize,
+        /// Output directory for the committee + key files.
+        #[arg(long, default_value = "./dag-keys")]
+        output_dir: std::path::PathBuf,
+        /// Host IP for the validators' DAG listeners.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// DAG port of validator 1 (10-port stride per validator;
+        /// keep `(base + (count-1) * 10) * 10 <= 65535` — the mesh dials
+        /// out from source port `listen * 10`).
+        #[arg(long, default_value = "3500")]
+        base_dag_port: u16,
+    },
+    /// Run as one networked DAG validator (multi-node mode): transactions
+    /// flow through Mysticeti DAG ordering and seal on commit, so every
+    /// validator converges to identical blocks and state roots.
+    Validator {
+        /// Shared committee file (dag-committee.json from `keygen`).
+        #[arg(long)]
+        committee: std::path::PathBuf,
+        /// This validator's secret key file (validator-{i}.key).
+        #[arg(long)]
+        key: std::path::PathBuf,
+        /// Data directory for chain state (defaults to
+        /// ./.kanari-evm-validator-{i}).
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+        /// JSON-RPC listen port (defaults to the validator's DAG port + 1).
+        #[arg(long)]
+        rpc_port: Option<u16>,
+        /// JSON-RPC listen host/IP.
+        #[arg(long, default_value = "127.0.0.1")]
+        rpc_host: String,
+        /// Shared dev faucet secret (32-byte hex). All validators must use
+        /// the SAME value (or none) or genesis — and hence state roots —
+        /// will diverge. No faucet is auto-created in validator mode.
+        #[arg(long)]
+        faucet_key: Option<String>,
+    },
 }
 
 fn default_data_dir() -> std::path::PathBuf {
@@ -323,6 +368,115 @@ fn cmd_reset(data_dir: Option<std::path::PathBuf>, force: bool) {
     );
 }
 
+fn cmd_keygen(
+    node_count: usize,
+    output_dir: std::path::PathBuf,
+    host: &str,
+    base_dag_port: u16,
+) {
+    use kanari_evm::core_consensus::generate_committee;
+    let host: std::net::IpAddr = host
+        .parse()
+        .unwrap_or_else(|_| fatal("--host needs an IP address"));
+    let committee =
+        generate_committee(node_count, host, base_dag_port, &output_dir).unwrap_or_else(|e| {
+            fatal(&format!("keygen failed: {e}"));
+        });
+    println!(
+        "committee for {} validators written to {}",
+        committee.len(),
+        output_dir.display()
+    );
+    for entry in &committee.authorities {
+        println!("  {}  {}  {}", entry.id, entry.dag_address, entry.public_key);
+    }
+    println!("secret keys: validator-{{1..{}}}.key (DO NOT SHARE)", committee.len());
+}
+
+async fn run_validator(
+    committee: std::path::PathBuf,
+    key: std::path::PathBuf,
+    data_dir: Option<std::path::PathBuf>,
+    rpc_port: Option<u16>,
+    rpc_host: String,
+    faucet_key: Option<B256>,
+) {
+    use kanari_evm::core_consensus::{DEFAULT_ROUND_TIMEOUT, ValidatorNode, ValidatorOpts};
+    use kanari_evm::core_consensus::committee::load_validator;
+
+    let identity =
+        load_validator(&committee, &key).unwrap_or_else(|e| fatal(&format!("bad committee/key: {e}")));
+    let number = identity.index + 1;
+    let data_dir =
+        data_dir.unwrap_or_else(|| std::path::PathBuf::from(format!("./.kanari-evm-validator-{number}")));
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        fatal(&format!("cannot create data dir {}: {e}", data_dir.display()));
+    }
+    let rpc_port = rpc_port.unwrap_or_else(|| identity.own_address.port() + 1);
+
+    // Genesis MUST be identical on all validators or state roots diverge.
+    // devnet() is deterministic; the faucet is opt-in shared (no auto-gen).
+    let spec = match faucet_key {
+        Some(secret) => {
+            let signer = PrivateKeySigner::from_bytes(&secret)
+                .unwrap_or_else(|_| fatal("invalid --faucet-key secret"));
+            let addr = signer.address();
+            let mut alloc = vec![(DEV_FUNDED_ACCOUNT, U256::from(DEV_FUNDED_BALANCE))];
+            alloc.push((
+                addr,
+                U256::from(kanari_evm::FAUCET_GENESIS_ETH.saturating_mul(WEI_IN_ETH)),
+            ));
+            KanariChainSpec::with_alloc(KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, alloc)
+        }
+        None => KanariChainSpec::devnet(),
+    };
+    let state_file = data_dir.join("state.json");
+    let mut node =
+        KanariNode::open(spec, &state_file).unwrap_or_else(|e| fatal(&format!("failed to open node: {e}")));
+    if let Some(secret) = faucet_key {
+        node.set_faucet_key(secret)
+            .unwrap_or_else(|e| fatal(&format!("failed to store faucet key: {e}")));
+        println!("shared faucet enabled (all validators must use the same key)");
+    } else {
+        println!("faucet disabled (validator mode never auto-creates one)");
+    }
+
+    let shared = Arc::new(Mutex::new(node));
+    let _validator = ValidatorNode::spawn(
+        shared.clone(),
+        ValidatorOpts {
+            committee_path: committee,
+            key_path: key,
+            dag_wal_dir: Some(data_dir.join("dag-wal")),
+            round_timeout: DEFAULT_ROUND_TIMEOUT,
+        },
+    )
+    .await
+    .unwrap_or_else(|e| fatal(&format!("failed to join DAG mesh: {e}")));
+
+    println!("========================================");
+    println!("Kanari EVM Validator {} ({})", identity.id, identity.own_address);
+    println!("========================================");
+    println!("RPC URL:   http://{rpc_host}:{rpc_port}");
+    println!("Chain ID:  {KANARI_EVM_DEV_CHAIN_ID}");
+    println!("Data Dir:  {}", data_dir.display());
+    println!("========================================");
+    println!();
+
+    let app = rpc::router(shared);
+    let bind: std::net::IpAddr = rpc_host
+        .parse()
+        .unwrap_or_else(|_| fatal("--rpc-host needs an IP address"));
+    let addr = SocketAddr::new(bind, rpc_port);
+    println!("JSON-RPC listening on http://{addr}");
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .unwrap_or_else(|e| fatal(&format!("failed to bind {addr}: {e}")));
+    axum::serve(listener, app)
+        .await
+        .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -365,5 +519,29 @@ async fn main() {
             .await;
         }
         Commands::Reset { data_dir, force } => cmd_reset(data_dir, force),
+        Commands::Keygen {
+            node_count,
+            output_dir,
+            host,
+            base_dag_port,
+        } => cmd_keygen(node_count, output_dir, &host, base_dag_port),
+        Commands::Validator {
+            committee,
+            key,
+            data_dir,
+            rpc_port,
+            rpc_host,
+            faucet_key,
+        } => {
+            run_validator(
+                committee,
+                key,
+                data_dir,
+                rpc_port,
+                rpc_host,
+                faucet_key.as_deref().map(parse_secret),
+            )
+            .await;
+        }
     }
 }

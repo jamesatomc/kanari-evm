@@ -59,12 +59,34 @@ impl KanariNode {
         Ok(CallResult::from_output(out))
     }
 
-    /// Validate, execute and instantly seal a signed raw transaction.
-    /// Reverted transactions are sealed with `success: false` (standard EVM
-    /// semantics: gas is still charged and the nonce advances).
+    /// Validate and queue a signed raw transaction.
+    ///
+    /// Single-node mode executes and instantly seals (reverted transactions
+    /// seal with `success: false` — standard EVM semantics: gas is still
+    /// charged and the nonce advances). Validator mode submits to the DAG
+    /// mempool and returns the transaction hash immediately; the transaction
+    /// seals once a DAG commit covers it.
     pub fn send_raw_transaction(&mut self, raw: Bytes) -> Result<B256, NodeError> {
+        if let Some(sender) = &self.dag_sender {
+            sender
+                .try_send(vec![raw.to_vec()])
+                .map_err(|e| NodeError::Execution(format!("dag mempool full: {e}")))?;
+            return Ok(keccak256(&raw));
+        }
         let number = self.block_number() + 1;
         let timestamp = now_secs();
+        self.seal_raw(raw, number, timestamp)
+    }
+
+    /// Seal one DAG-committed payload with a deterministic timestamp.
+    ///
+    /// Every validator commits identical sub-DAGs in identical order, so
+    /// feeding the commit's anchor timestamp here keeps block hashes and
+    /// state roots convergent across validators. An invalid payload is
+    /// rejected (all validators reject it identically) without stopping
+    /// the commit loop — the caller logs and continues.
+    pub(crate) fn seal_committed(&mut self, raw: Bytes, timestamp: u64) -> Result<B256, NodeError> {
+        let number = self.block_number() + 1;
         self.seal_raw(raw, number, timestamp)
     }
 
@@ -118,7 +140,12 @@ impl KanariNode {
     /// Decode, execute, commit to revm state, update the SMT commitment and
     /// seal a block, persisting it atomically (block + receipts + tx index
     /// + height) to RocksDB.
-    fn seal_raw(&mut self, raw: Bytes, number: u64, timestamp: u64) -> Result<B256, NodeError> {
+    pub(crate) fn seal_raw(
+        &mut self,
+        raw: Bytes,
+        number: u64,
+        timestamp: u64,
+    ) -> Result<B256, NodeError> {
         let prepared = PreparedTx::decode(&raw, self.spec.chain_id)?;
         let parent_hash = next_parent_hash(&self.blocks);
         let mut evm = self.evm_for_block(number, timestamp);

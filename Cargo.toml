@@ -48,6 +48,8 @@ alloy-signer = "2"
 alloy-signer-local = "2.4.2"
 clap = { version = "4.6.6", features = ["derive"] }
 thiserror = "2.0.20"
+# Ed25519 DAG committee key generation (must match mysticeti's rand 0.8).
+rand = "=0.8.8"
 
 [dev-dependencies]
 reqwest = { version = "0.13.5", features = ["json"] }

@@ -24,7 +24,9 @@ src/
 │   ├── precompiles.rs      — Falcon-512 / Dilithium3 verify precompiles
 │   └── contracts.rs        — hand-assembled demo contracts (no solc)
 ├── core_consensus/         — consensus & durability
-│   ├── ordering.rs         — Mysticeti DAG ordering driver
+│   ├── ordering.rs         — Mysticeti DAG ordering driver (in-process)
+│   ├── committee.rs        — validator committee files (`keygen`)
+│   ├── validator.rs        — networked DAG validator + commit execution
 │   └── store.rs            — RocksDB chain store (blocks, receipts, meta)
 └── server_rpc/             — RPC server
     ├── rpc.rs              — Ethereum JSON-RPC over HTTP (axum)
@@ -108,6 +110,38 @@ Anything else returns `-32601 Method not found`. Block hashes are
 deterministic `keccak256(parent || number || timestamp)` placeholders —
 accepted by wallets, but NOT full L1 validity proofs.
 
+## Multi-node validators
+
+`kanari-evm-node validator` runs one process in a multi-validator network,
+mirroring the `kanari-node` topology from kanari-sdk:
+
+```powershell
+kanari-evm-node keygen --node-count 4 --output-dir ./dag-keys --base-dag-port 3500
+kanari-evm-node validator --committee ./dag-keys/dag-committee.json `
+  --key ./dag-keys/validator-1.key --data-dir ./.kanari-evm-validator-1
+# …or all at once, one terminal per validator:
+.\start-validators.ps1 -NodeCount 4
+```
+
+- **Committee files**: `dag-committee.json` (validator ids, DAG socket
+  addresses, Ed25519 pubkeys) is shared; each validator holds its own
+  `validator-{i}.key` secret. Authority ids are 1-based (`0x1`, …) like
+  kanari-sdk. Keep `(base + (count-1) * 10) * 10 <= 65535` — the Mysticeti
+  TCP mesh dials out from source port `listen * 10`.
+- **Mempool**: while attached, `send_raw_transaction` submits to the local
+  DAG mempool and returns the tx hash immediately; receipts appear once a
+  commit covers the transaction.
+- **Execution**: every commit seals with its **anchor block timestamp**
+  (never wall-clock), so block hashes and state roots converge on all
+  validators. Payloads that fail today but may succeed tomorrow (e.g. nonce
+  gaps) wait in a deterministic pending queue swept on every commit —
+  standard queued-tx mempool behavior, identical everywhere because the
+  commit sequence is identical.
+- **Genesis discipline**: all validators must start from byte-identical
+  genesis or state roots diverge from block 0. Validator mode therefore
+  never auto-creates a faucet; pass the SAME `--faucet-key` to every
+  validator (or none) for a shared faucet account.
+
 ## Invariants (do not break)
 
 1. **Replay determinism** — reopening the same data dir must reproduce
@@ -119,6 +153,10 @@ accepted by wallets, but NOT full L1 validity proofs.
    genesis-allocation sum; fees only move value to the beneficiary.
 4. **Key disjointness** — chain-store keys (`m:`/`b:`/`r:`/`t:`) must never
    collide with SMT keys (`n:`/`d:` + roots).
+5. **Validator convergence** — given identical genesis and identical
+   commits, every validator must seal identical blocks: seal commits with
+   the anchor timestamp, never wall-clock, and keep the pending queue
+   (order, cap, drop policy) a pure function of the commit sequence.
 
 ## Verification
 

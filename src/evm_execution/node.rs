@@ -29,6 +29,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
+use tokio::sync::mpsc;
 
 /// Base fee charged by every sealed block (1 gwei, Anvil-style).
 pub const DEFAULT_BASE_FEE_WEI: u128 = 1_000_000_000;
@@ -126,6 +127,11 @@ fn chain_db_dir(state_base: &Path) -> PathBuf {
 }
 
 /// Single-node dev chain with instant sealing.
+///
+/// In validator mode ([`crate::core_consensus::validator`]) `dag_sender` is
+/// set and [`KanariNode::send_raw_transaction`] (see `execution.rs`)
+/// submits to the DAG mempool instead of sealing instantly; sealing then
+/// happens deterministically on each DAG commit via `seal_committed`.
 pub struct KanariNode {
     pub(crate) spec: KanariChainSpec,
     pub(crate) db: InMemoryDB,
@@ -135,6 +141,7 @@ pub struct KanariNode {
     pub(crate) smt: SparseMerkleTree,
     pub(crate) genesis_root: B256,
     pub(crate) faucet_key: Option<B256>,
+    pub(crate) dag_sender: Option<mpsc::Sender<Vec<Vec<u8>>>>,
 }
 
 impl KanariNode {
@@ -159,6 +166,7 @@ impl KanariNode {
             smt,
             genesis_root: B256::ZERO,
             faucet_key: None,
+            dag_sender: None,
         };
         if node.store.stored_chain_id()?.is_none() {
             if state_base.is_file() {
@@ -203,6 +211,19 @@ impl KanariNode {
     /// Chain id of this node.
     pub fn chain_id(&self) -> u64 {
         self.spec.chain_id
+    }
+
+    /// Attach the DAG mempool sender (validator mode). While set,
+    /// `send_raw_transaction` submits to the DAG instead of sealing
+    /// instantly; use `seal_committed` (execution.rs) for commit-driven
+    /// sealing.
+    pub fn set_dag_sender(&mut self, sender: mpsc::Sender<Vec<Vec<u8>>>) {
+        self.dag_sender = Some(sender);
+    }
+
+    /// True while transactions flow through the DAG mempool.
+    pub fn is_validator_mode(&self) -> bool {
+        self.dag_sender.is_some()
     }
 
     /// Latest sealed block number (0 before the first transaction).

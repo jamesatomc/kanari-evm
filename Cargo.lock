@@ -3326,6 +3326,7 @@ dependencies = [
  "dag",
  "kanari-crypto",
  "kanari-db-common",
+ "rand 0.8.8",
  "reqwest",
  "revm",
  "rocksdb",

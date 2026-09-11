@@ -30,7 +30,7 @@ pub mod evm_execution;
 pub mod server_rpc;
 
 // Backward-compatible module aliases (pre-reorg flat layout).
-pub use core_consensus::{ordering, store};
+pub use core_consensus::{committee, ordering, store, validator};
 pub use evm_execution::{chainspec, contracts, node, precompiles};
 pub use server_rpc::rpc;
 
