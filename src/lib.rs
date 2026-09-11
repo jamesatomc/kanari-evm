@@ -39,7 +39,7 @@ pub use evm_execution::chainspec::{
     DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
     KANARI_EVM_MAX_SUPPLY_ETH, KanariChainSpec,
 };
-pub use evm_execution::node::{
+pub use evm_execution::{
     BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, CallRequest, DEFAULT_BASE_FEE_WEI, FAUCET_GENESIS_ETH,
     KanariNode, MAX_FAUCET_ETH_PER_REQUEST, SmtProof, WEI_IN_ETH, generate_faucet_key,
 };

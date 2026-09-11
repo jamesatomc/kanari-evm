@@ -4,11 +4,17 @@
 //! Minimal Ethereum JSON-RPC over HTTP for the Kanari dev chain.
 //!
 //! Covers what wallets (e.g. MetaMask) and scripts need: chain id, balances,
-//! nonces, gas price, sending raw transactions (instant-sealed), receipts,
-//! blocks and read-only calls. Anything else returns `-32601 Method not
-//! found`. Block hashes are deterministic placeholders (see `node.rs`).
+//! nonces, gas price, storage slots, sending raw transactions
+//! (instant-sealed), receipts, blocks and read-only calls. `eth_getLogs`
+//! returns the empty set (receipts carry no logs on this dev chain) so that
+//! dApp libraries finish loading instead of failing. Anything else returns
+//! `-32601 Method not found`. Block hashes are deterministic placeholders
+//! (see `node.rs`).
 
-use crate::evm_execution::node::{CallRequest, DEFAULT_BASE_FEE_WEI, KanariNode, NodeError};
+use crate::evm_execution::{
+    execution::CallRequest,
+    node::{DEFAULT_BASE_FEE_WEI, KanariNode, NodeError},
+};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
@@ -364,6 +370,24 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                 Err(e) => err(id, -32602, e),
             }
         }
+        "eth_getStorageAt" => {
+            // params: [address, slot, block?]. Block is accepted and ignored
+            // (only the current state is queryable on this dev chain).
+            let arr = params.as_array().cloned().unwrap_or_default();
+            let (Some(addr_v), Some(slot_v)) = (arr.first(), arr.get(1)) else {
+                return err(id, -32602, "want [address, slot, block?]".to_string());
+            };
+            let (addr, slot) = match (parse_address(addr_v), parse_u256(slot_v)) {
+                (Ok(a), Ok(s)) => (a, s),
+                (Err(e), _) | (_, Err(e)) => return err(id, -32602, e),
+            };
+            let mut node = node.lock().await;
+            match node.storage_of(addr, slot) {
+                // DATA, 32 bytes: zero-padded hex, not minimal QUANTITY.
+                Ok(v) => ok(id, json!(format!("0x{v:064x}"))),
+                Err(e) => node_error(id, e),
+            }
+        }
         "eth_sendRawTransaction" => {
             let arr = params.as_array().cloned().unwrap_or_default();
             let Some(raw_v) = arr.first() else {
@@ -411,6 +435,12 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                 }
                 Err(e) => err(id, -32602, e),
             }
+        }
+        "eth_getLogs" => {
+            // Receipts carry no logs on this dev chain, so any filter
+            // matches the empty set. Returning `[]` (instead of "method not
+            // found") keeps wallets and dApp libraries loading.
+            ok(id, json!([]))
         }
         "eth_getBlockByHash" => {
             let arr = params.as_array().cloned().unwrap_or_default();

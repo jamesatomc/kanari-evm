@@ -336,3 +336,48 @@ async fn block_priority_fees_accrue_to_beneficiary() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// dApp compatibility: `eth_getLogs` answers `[]` (receipts carry no logs)
+// instead of "method not found", and `eth_getStorageAt` serves the live
+// revm state as 32-byte zero-padded hex.
+#[tokio::test]
+async fn dev_node_serves_logs_and_storage_slots() {
+    let dir = std::env::temp_dir().join(format!("kanari-evm-logs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let node = KanariNode::open(KanariChainSpec::devnet(), dir.join("state.json")).expect("open");
+    let app = rpc::router(Arc::new(Mutex::new(node)));
+    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+        .await
+        .expect("bind");
+    let url = format!("http://{}/", listener.local_addr().expect("addr"));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let client = reqwest::Client::new();
+
+    let logs = rpc(
+        &client,
+        &url,
+        "eth_getLogs",
+        json!([{"fromBlock": "0x0", "toBlock": "latest"}]),
+    )
+    .await;
+    assert_eq!(logs, json!([]), "no logs are stored, so the set is empty");
+
+    let slot = rpc(
+        &client,
+        &url,
+        "eth_getStorageAt",
+        json!([kanari_evm::DEV_FUNDED_ACCOUNT.to_string(), "0x0", "latest"]),
+    )
+    .await;
+    assert_eq!(
+        slot,
+        json!("0x0000000000000000000000000000000000000000000000000000000000000000"),
+        "untouched slot reads as zero"
+    );
+
+    server.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
