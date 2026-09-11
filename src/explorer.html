@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kanari EVM Explorer</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background: #0b0e14; color: #e6e6e6; margin: 0; }
+  header { background: #11151f; padding: 12px 20px; display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header span { color: #8b93a7; font-size: 13px; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  .search { display: flex; gap: 8px; margin-bottom: 16px; }
+  input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #333a4d; background: #11151f; color: #e6e6e6; }
+  button { padding: 10px 16px; border-radius: 8px; border: 0; background: #3b82f6; color: #fff; cursor: pointer; }
+  .card { background: #11151f; border: 1px solid #1f2534; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+  .mono { font-family: ui-monospace, monospace; word-break: break-all; }
+  .muted { color: #8b93a7; font-size: 13px; }
+  .ok { color: #4ade80; } .bad { color: #f87171; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { padding: 6px 8px; border-bottom: 1px solid #1f2534; text-align: left; }
+  a { color: #60a5fa; cursor: pointer; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kanari EVM Explorer</h1>
+  <span id="chain">chain …</span>
+  <span id="tip">block …</span>
+  <span id="supply">supply …</span>
+</header>
+<main>
+  <div class="search">
+    <input id="q" placeholder="address / tx hash / block number">
+    <button onclick="search()">Look up</button>
+  </div>
+  <div id="result"></div>
+  <h3>Latest blocks</h3>
+  <div id="blocks"></div>
+</main>
+<script>
+const rpc = (method, params) =>
+  fetch(".", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({jsonrpc: "2.0", id: 1, method, params})})
+    .then(r => r.json()).then(j => { if (j.error) throw new Error(j.error.message); return j.result; });
+const fmtEth = hex => {
+  try {
+    const wei = BigInt(hex);
+    const e18 = 1000000000000000000n;
+    const whole = wei / e18, frac = (wei % e18).toString().padStart(18, "0").slice(0, 6);
+    return whole.toString() + "." + frac;
+  } catch { return "?"; }
+};
+const fmtEthShort = hex => {
+  try {
+    const e18 = 1000000000000000000n, m = 1000000n * e18;
+    const whole = BigInt(hex) / e18;
+    if (whole >= m) {
+      const mil = Number(whole / m) + Number(whole % m) / 1000000;
+      return mil.toFixed(2) + "M";
+    }
+    return fmtEth(hex);
+  } catch { return "?"; }
+};
+const num = hex => parseInt(hex, 16);
+async function loadSupply() {
+  try {
+    const s = await rpc("kanari_supply", []);
+    document.getElementById("supply").textContent =
+      "supply " + fmtEthShort(s.totalSupply) + " / max " + fmtEthShort(s.maxSupply);
+  } catch { /* older node without kanari_supply; refresh hides nothing */ }
+}
+async function refresh() {
+  try {
+    const [chain, tip] = await Promise.all([
+      rpc("eth_chainId", []), rpc("eth_blockNumber", [])]);
+    document.getElementById("chain").textContent = "chain " + num(chain);
+    document.getElementById("tip").textContent = "block " + num(tip);
+    const n = num(tip), rows = [];
+    for (let i = Math.max(0, n - 9); i <= n; i++) {
+      const b = await rpc("eth_getBlockByNumber", ["0x" + i.toString(16), false]);
+      if (b) rows.unshift(`<tr><td><a onclick="showBlock(${i})">${i}</a></td><td class="mono">${b.hash.slice(0, 18)}…</td><td>${b.transactions.length} tx</td></tr>`);
+    }
+    document.getElementById("blocks").innerHTML = "<table>" + rows.join("") + "</table>";
+  } catch (e) { /* node starting up; next tick retries */ }
+}
+async function showBlock(i) {
+  const b = await rpc("eth_getBlockByNumber", ["0x" + i.toString(16), true]);
+  if (!b) return;
+  document.getElementById("result").innerHTML = `<div class="card">
+    <div>Block ${i} <span class="muted mono">${b.hash}</span></div>
+    <div class="muted">stateRoot <span class="mono">${b.stateRoot}</span></div>
+    <div>${b.transactions.length} transaction(s)</div></div>`;
+}
+async function search() {
+  const q = document.getElementById("q").value.trim();
+  const el = document.getElementById("result");
+  try {
+    if (/^0x[0-9a-fA-F]{64}$/.test(q)) {
+      const [tx, rc] = await Promise.all([
+        rpc("eth_getTransactionByHash", [q]), rpc("eth_getTransactionReceipt", [q])]);
+      if (!tx) { el.innerHTML = "<div class='card'>Transaction not found</div>"; return; }
+      el.innerHTML = `<div class="card"><div>Tx <span class="mono">${tx.hash}</span></div>
+        <div>from <span class="mono">${tx.from}</span> → ${tx.to ? `<span class="mono">${tx.to}</span>` : "(create)"}</div>
+        <div>value ${fmtEth(tx.value)} · nonce ${num(tx.nonce)} · block ${num(tx.blockNumber)}</div>
+        <div>status: ${rc ? (rc.status === "0x1" ? "<span class='ok'>success</span>" : "<span class='bad'>failed</span>") : "pending"}</div></div>`;
+    } else if (/^0x[0-9a-fA-F]{40}$/.test(q)) {
+      const [bal, nonce] = await Promise.all([
+        rpc("eth_getBalance", [q, "latest"]), rpc("eth_getTransactionCount", [q, "latest"])]);
+      el.innerHTML = `<div class="card"><div>Account <span class="mono">${q}</span></div>
+        <div>balance ${fmtEth(bal)} · nonce ${num(nonce)}</div></div>`;
+    } else if (/^\d+$/.test(q)) {
+      showBlock(parseInt(q, 10));
+    } else {
+      el.innerHTML = "<div class='card'>Enter an address, tx hash, or block number</div>";
+    }
+  } catch (e) { el.innerHTML = `<div class="card bad">${e.message}</div>`; }
+}
+setInterval(refresh, 3000);
+refresh();
+loadSupply();
+</script>
+</body>
+</html>

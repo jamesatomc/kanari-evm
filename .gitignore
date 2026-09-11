@@ -1,0 +1,33 @@
+*~
+.idea
+.DS_Store
+target
+tmp
+# Keep the workspace Cargo.lock committed so CI builds are reproducible
+# (do NOT ignore it; only sub-workspaces like third_party may ignore theirs)
+frameworks/kanari-framework/build
+data
+
+# Web / docs local dependencies and build output
+node_modules
+.next
+out
+dist
+coverage
+.turbo
+.vercel
+
+# Local environment secrets
+.env
+**/.env
+!.env.example
+!**/.env.example
+.kanari-local
+.codex-runlogs
+
+# Local EVM dev node state (journals, SMT dbs, faucet keys) - never commit
+kanari-evm-state.json*
+*.chain.db/
+*.smt/
+*.faucet.key
+target-test
