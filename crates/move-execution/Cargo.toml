@@ -1,0 +1,23 @@
+[package]
+name = "kanari-evm-move-execution"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kanari EVM execution layer (chain spec, PQC precompiles, instant-seal engine)."
+
+[dependencies]
+kanari-evm-storage.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
+kanari-crypto.workspace = true
+revm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smt.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

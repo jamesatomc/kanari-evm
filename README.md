@@ -36,8 +36,8 @@ Prerequisites: stable Rust (`rustup`), Windows or Linux.
 Direct binary equivalents:
 
 ```powershell
-cargo run -p kanari-evm --bin kanari-evm-node -- local
-cargo run -p kanari-evm --bin kanari-evm-node -- start --network devnet `
+cargo run -p kanari-evm-node -- local
+cargo run -p kanari-evm-node -- start --network devnet `
   --rpc-port 8546 --rpc-host 0.0.0.0 --data-dir D:\evm-data
 ```
 
@@ -61,12 +61,12 @@ working. **Never use a real key with `--faucet-key`.**
 ## Repository layout
 
 ```text
-src/
-├── bin/kanari-evm-node.rs  — CLI: start / local / reset
-├── evm_execution/          — chain spec, PQC precompiles, KanariNode engine
-├── core_consensus/         — DAG ordering + RocksDB chain store
-└── server_rpc/             — JSON-RPC server + explorer UI
-tests/                      — e2e: wallet flow, contracts, PQC, DAG, SMT proofs
+crates/
+├── kanari-node/     — CLI binary + e2e tests
+├── move-execution/  — chain spec, PQC precompiles, KanariNode engine
+├── consensus/       — DAG ordering, committee, validators
+├── storage/         — RocksDB chain store
+└── server_rpc/      — JSON-RPC server + explorer UI
 ```
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full picture.
@@ -79,7 +79,7 @@ cargo test
 
 # Optional: same contract flow against a live node
 $env:KANARI_EVM_LIVE_RPC = "http://127.0.0.1:8545"
-cargo test -p kanari-evm --test contracts live_
+cargo test -p kanari-evm-node --test contracts live_
 ```
 
 CI runs clippy + tests on Windows and Linux

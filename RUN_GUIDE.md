@@ -10,7 +10,7 @@ standard data dir, and a `start-*.ps1` launcher.
 
 ```powershell
 # Build once
-cargo build -p kanari-evm --bin kanari-evm-node   # from crates/kanari-evm
+cargo build -p kanari-evm-node
 
 # Local-only dev node (127.0.0.1:8545, data in ./.kanari-evm-local)
 .\start-evm-node.ps1 -Command local
@@ -105,4 +105,4 @@ Checklist per host:
 - `--faucet-key <32-byte-hex>` pins the faucet to your own dev key.
 - Dev faucet RPC: `kanari_faucet(["0xAddr","5"])` — dev only, no auth.
 - Live deploy test: `KANARI_EVM_LIVE_RPC=http://127.0.0.1:8545 cargo test
-  -p kanari-evm --test contracts live_`.
+  -p kanari-evm-node --test contracts live_`.

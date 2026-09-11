@@ -1,0 +1,16 @@
+[package]
+name = "kanari-evm-rpc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kanari EVM Ethereum JSON-RPC server plus bundled explorer UI."
+
+[dependencies]
+kanari-evm-move-execution.workspace = true
+alloy-primitives.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

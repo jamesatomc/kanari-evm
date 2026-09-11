@@ -3312,7 +3312,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "kanari-evm"
+name = "kanari-evm-consensus"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "consensus",
+ "dag",
+ "kanari-evm-move-execution",
+ "kanari-evm-storage",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "kanari-evm-move-execution"
+version = "0.0.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "kanari-crypto",
+ "kanari-evm-storage",
+ "revm",
+ "serde",
+ "serde_json",
+ "smt",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "kanari-evm-node"
 version = "0.0.1"
 dependencies = [
  "alloy-consensus",
@@ -3322,19 +3357,39 @@ dependencies = [
  "alloy-signer-local",
  "axum",
  "clap",
- "consensus",
- "dag",
  "kanari-crypto",
- "kanari-db-common",
- "rand 0.8.8",
+ "kanari-evm-consensus",
+ "kanari-evm-move-execution",
+ "kanari-evm-rpc",
+ "kanari-evm-storage",
  "reqwest",
- "revm",
+ "serde_json",
+ "smt",
+ "tokio",
+]
+
+[[package]]
+name = "kanari-evm-rpc"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "axum",
+ "kanari-evm-move-execution",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "kanari-evm-storage"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "kanari-db-common",
  "rocksdb",
  "serde",
  "serde_json",
- "smt",
  "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]

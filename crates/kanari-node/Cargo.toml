@@ -1,0 +1,31 @@
+[package]
+name = "kanari-evm-node"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kanari EVM node binary (single-node and multi-validator modes)."
+categories = ["development-tools"]
+keywords = ["blockchain", "sdk", "move", "rust", "evm"]
+
+[dependencies]
+kanari-evm-consensus.workspace = true
+kanari-evm-move-execution.workspace = true
+kanari-evm-rpc.workspace = true
+kanari-evm-storage.workspace = true
+alloy-primitives.workspace = true
+alloy-signer-local.workspace = true
+axum.workspace = true
+clap.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-signer.workspace = true
+axum.workspace = true
+kanari-crypto.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+smt.workspace = true

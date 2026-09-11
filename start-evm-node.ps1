@@ -23,7 +23,7 @@ if (-not $exePath) {
     if ($onPath) { $exePath = $onPath.Source }
 }
 if (-not $exePath) {
-    Write-Host 'Error: kanari-evm-node executable not found! Run: cargo build -p kanari-evm --bin kanari-evm-node' -ForegroundColor Red
+    Write-Host 'Error: kanari-evm-node executable not found! Run: cargo build -p kanari-evm-node' -ForegroundColor Red
     exit 1
 }
 Write-Host "Using: $exePath" -ForegroundColor DarkGray

@@ -8,38 +8,39 @@ Mysticeti DAG transaction ordering, and a minimal Ethereum JSON-RPC server.
 Fresh chains activate the newest hardfork (`AMSTERDAM`) at genesis — there
 is no fork history to replay.
 
-## Module layout
+## Crate layout (Cargo workspace)
 
 ```text
-src/
-├── lib.rs                  — crate facade + backward-compat re-exports
-├── bin/kanari-evm-node.rs  — node entry point (clap CLI)
-├── evm_execution/          — EVM execution layer
-│   ├── node.rs             — lifecycle, persistence glue, chain accessors
-│   ├── execution.rs        — tx validation, revm execution, instant sealing
-│   ├── views.rs            — JSON block / transaction / receipt views
-│   ├── faucet.rs           — dev faucet (no auth, capped)
-│   ├── state.rs            — state reads + SMT state commitment
-│   ├── chainspec.rs        — chain spec + genesis allocations
-│   ├── precompiles.rs      — Falcon-512 / Dilithium3 verify precompiles
-│   └── contracts.rs        — hand-assembled demo contracts (no solc)
-├── core_consensus/         — consensus & durability
-│   ├── ordering.rs         — Mysticeti DAG ordering driver (in-process)
-│   ├── committee.rs        — validator committee files (`keygen`)
-│   ├── validator.rs        — networked DAG validator + commit execution
-│   └── store.rs            — RocksDB chain store (blocks, receipts, meta)
-└── server_rpc/             — RPC server
-    ├── rpc.rs              — Ethereum JSON-RPC over HTTP (axum)
-    └── explorer.html       — bundled single-file block explorer
+crates/
+├── move-execution/  — EVM execution layer (lib: kanari-evm-move-execution)
+│   ├── chainspec.rs  — chain spec + genesis allocations
+│   ├── precompiles.rs— Falcon-512 / Dilithium3 verify precompiles
+│   ├── contracts.rs  — hand-assembled demo contracts (no solc)
+│   ├── node.rs       — lifecycle, persistence glue, chain accessors
+│   ├── execution.rs  — tx validation, revm execution, instant sealing
+│   ├── views.rs      — JSON block / transaction / receipt views
+│   ├── faucet.rs     — dev faucet (no auth, capped)
+│   └── state.rs      — state reads + SMT state commitment
+├── consensus/       — consensus (lib: kanari-evm-consensus)
+│   ├── ordering.rs   — Mysticeti DAG ordering driver (in-process)
+│   ├── committee.rs  — validator committee files (`keygen`)
+│   └── validator.rs  — networked DAG validator + commit execution
+├── storage/         — durability (lib: kanari-evm-storage)
+│   └── store.rs      — RocksDB store + SealedBlock/StoredReceipt shapes
+├── server_rpc/      — RPC server (lib: kanari-evm-rpc)
+│   ├── rpc.rs        — Ethereum JSON-RPC over HTTP (axum)
+│   └── explorer.html — bundled single-file block explorer
+└── kanari-node/     — node binary (bin: kanari-evm-node) + e2e tests
+    ├── src/main.rs   — entry point: start / local / reset / keygen / validator
+    └── tests/        — wallet flow, contracts, PQC, DAG, SMT proofs, multinode
 ```
 
-> Rust module names cannot contain `-`, so the folders use underscores
-> (`evm_execution`, `core_consensus`, `server_rpc`). The old flat paths
-> (`kanari_evm::node`, `kanari_evm::rpc`, `kanari_evm::ordering`, …) are
-> kept as re-export aliases in `lib.rs`; new code should use the grouped
-> paths (`kanari_evm::evm_execution::node`, …).
+Dependencies flow one way (no cycles):
+`storage` ← `move-execution` ← {`consensus`, `server_rpc`} ← `kanari-node`.
+`SealedBlock`/`StoredReceipt` live in `storage`; `SharedNode` lives in
+`move-execution::node` and is re-exported by `server_rpc`.
 
-## Execution (`evm_execution`)
+## Execution (`move-execution`)
 
 `KanariNode` (`node.rs`) owns the in-memory `revm` state, the sealed-block
 log, and the RocksDB-backed `ChainStore` / SMT commitment. Its behavior is
@@ -65,7 +66,7 @@ msg \|\| sig`. Output is a 32-byte big-endian boolean (`0`/`1`); any
 failure — malformed input, wrong lengths, bad signature — returns `0`
 (fail-closed, ecrecover-style). Gas is charged in full regardless.
 
-## Consensus & durability (`core_consensus`)
+## Consensus & durability (`consensus` + `storage`)
 
 `ordering.rs` runs N in-process Mysticeti validator cores over a full mesh,
 commits through the standard committer, and yields linearized payload
