@@ -8,7 +8,7 @@
 //! blocks and read-only calls. Anything else returns `-32601 Method not
 //! found`. Block hashes are deterministic placeholders (see `node.rs`).
 
-use crate::node::{CallRequest, DEFAULT_BASE_FEE_WEI, KanariNode, NodeError};
+use crate::evm_execution::node::{CallRequest, DEFAULT_BASE_FEE_WEI, KanariNode, NodeError};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};

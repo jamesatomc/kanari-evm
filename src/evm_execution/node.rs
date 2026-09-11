@@ -11,8 +11,8 @@
 //! `keccak256(parent || number || timestamp)` placeholders, which wallets
 //! accept but which must NOT be mistaken for full L1 validity proofs.
 
-use crate::chainspec::KanariChainSpec;
-use crate::store::{ChainStore, StoreError};
+use super::chainspec::KanariChainSpec;
+use crate::core_consensus::store::{ChainStore, StoreError};
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, transaction::SignerRecoverable};
 use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256, keccak256};
@@ -285,7 +285,7 @@ impl KanariNode {
             .genesis_alloc
             .iter()
             .fold(U256::ZERO, |acc, (_, balance)| acc.saturating_add(*balance));
-        let max = U256::from(crate::chainspec::KANARI_EVM_MAX_SUPPLY_ETH)
+        let max = U256::from(super::chainspec::KANARI_EVM_MAX_SUPPLY_ETH)
             .saturating_mul(U256::from(WEI_IN_ETH));
         (total, max)
     }
@@ -566,10 +566,10 @@ impl KanariNode {
         &mut self,
         number: u64,
         timestamp: u64,
-    ) -> crate::precompiles::KanariEvm<MainnetContext<&mut InMemoryDB>> {
-        crate::precompiles::build_kanari_evm(
+    ) -> super::precompiles::KanariEvm<MainnetContext<&mut InMemoryDB>> {
+        super::precompiles::build_kanari_evm(
             &mut self.db,
-            crate::precompiles::KanariEvmParams {
+            super::precompiles::KanariEvmParams {
                 chain_id: self.spec.chain_id,
                 spec: self.spec.spec_id,
                 number,

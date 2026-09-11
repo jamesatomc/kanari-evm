@@ -6,26 +6,43 @@
 //! A custom Kanari chain (chain spec + genesis + PQC verification precompiles
 //! à la EIP-8052/8053) built on the `revm` interpreter. See `Cargo.toml` for
 //! why the full `reth-node-builder` dependency is deferred to Linux targets.
+//!
+//! Module layout:
+//!
+//! ```text
+//! src/
+//! ├── lib.rs                  — crate facade (this file) + re-exports
+//! ├── bin/kanari-evm-node.rs  — node entry point (clap CLI)
+//! ├── evm_execution/          — EVM execution: chain spec, PQC precompiles,
+//! │                             demo contracts, instant-seal engine
+//! ├── core_consensus/         — consensus & durability: DAG ordering, store
+//! └── server_rpc/             — JSON-RPC server + bundled explorer UI
+//! ```
+//!
+//! The flat paths (`kanari_evm::node`, `kanari_evm::rpc`, …) are kept as
+//! aliases so existing code keeps compiling; new code should use the
+//! grouped paths (`kanari_evm::evm_execution::node`, …).
 
 pub use revm;
 
-pub mod chainspec;
-pub mod contracts;
-pub mod node;
-pub mod ordering;
-pub mod precompiles;
-pub mod rpc;
-pub mod store;
+pub mod core_consensus;
+pub mod evm_execution;
+pub mod server_rpc;
 
-pub use chainspec::{
+// Backward-compatible module aliases (pre-reorg flat layout).
+pub use core_consensus::{ordering, store};
+pub use evm_execution::{chainspec, contracts, node, precompiles};
+pub use server_rpc::rpc;
+
+pub use core_consensus::store::ChainStore;
+pub use evm_execution::chainspec::{
     DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
     KANARI_EVM_MAX_SUPPLY_ETH, KanariChainSpec,
 };
-pub use node::{
+pub use evm_execution::node::{
     BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, CallRequest, DEFAULT_BASE_FEE_WEI, FAUCET_GENESIS_ETH,
     KanariNode, MAX_FAUCET_ETH_PER_REQUEST, SmtProof, WEI_IN_ETH, generate_faucet_key,
 };
-pub use store::ChainStore;
 
 #[cfg(test)]
 mod tests {

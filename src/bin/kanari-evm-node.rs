@@ -26,7 +26,7 @@ use alloy_signer_local::PrivateKeySigner;
 use clap::{Parser, Subcommand, ValueEnum};
 use kanari_evm::{
     DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
-    KanariChainSpec, KanariNode, rpc,
+    KanariChainSpec, KanariNode, server_rpc::rpc,
 };
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;

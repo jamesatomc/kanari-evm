@@ -21,7 +21,7 @@
 //! one [`rocksdb::WriteBatch`]. Values are JSON for debuggability; this is a
 //! dev chain, not a high-throughput validator store.
 
-use crate::node::{SealedBlock, StoredReceipt};
+use crate::evm_execution::node::{SealedBlock, StoredReceipt};
 use alloy_primitives::{Address, B256, U256};
 use rocksdb::WriteBatch;
 use std::{path::Path, sync::Arc};
