@@ -86,7 +86,10 @@ async fn simple_storage_lifecycle() {
     let receipt = node.receipt(&deploy_hash).expect("receipt");
     assert!(receipt.success, "deploy must succeed");
     let contract = receipt.contract_address.expect("create yields address");
-    assert_eq!(node.code_of(contract).expect("code").as_ref(), contracts::SIMPLE_STORAGE_RUNTIME);
+    assert_eq!(
+        node.code_of(contract).expect("code").as_ref(),
+        contracts::SIMPLE_STORAGE_RUNTIME
+    );
 
     // Read before write: get() == 0.
     let read = |node: &mut KanariNode| {
@@ -106,7 +109,11 @@ async fn simple_storage_lifecycle() {
     // State-changing set(12345) as a signed transaction.
     let set_hash = node
         .send_raw_transaction(
-            sign_1559(&deployer, call_tx(1, contract, contracts::encode_set(12345))).await,
+            sign_1559(
+                &deployer,
+                call_tx(1, contract, contracts::encode_set(12345)),
+            )
+            .await,
         )
         .expect("set seals");
     let set_receipt = node.receipt(&set_hash).expect("set receipt");
@@ -234,7 +241,11 @@ async fn live_deploy_simple_storage() {
     // set(12345) as a signed on-chain transaction.
     let set_raw = sign_1559(
         &signer,
-        call_tx(nonce + 1, contract.parse().expect("addr"), contracts::encode_set(12345)),
+        call_tx(
+            nonce + 1,
+            contract.parse().expect("addr"),
+            contracts::encode_set(12345),
+        ),
     )
     .await;
     let set_hash = rpc_call(
@@ -286,7 +297,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(hex: &str) -> Vec<u8> {
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
-    assert!(hex.len() % 2 == 0);
+    assert!(hex.len().is_multiple_of(2));
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))

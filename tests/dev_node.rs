@@ -322,7 +322,7 @@ async fn block_priority_fees_accrue_to_beneficiary() {
     assert!(receipt.success);
     assert_eq!(receipt.gas_used, 21_000, "plain transfer costs 21k gas");
     let gas_used = receipt.gas_used;
-    drop(receipt);
+    let _ = receipt;
 
     // Treasury earned exactly gas_used x priority fee; the base fee burned.
     let got = node

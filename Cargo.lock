@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "kanari-evm"
-version = "0.2.8"
+version = "0.0.1"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",

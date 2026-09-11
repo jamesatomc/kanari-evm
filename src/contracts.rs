@@ -32,7 +32,8 @@ pub const SIMPLE_STORAGE_RUNTIME: &[u8] = &[
     0x60, 0x00, // 0x19: PUSH1 0x00
     0x80, // 0x1b: DUP1
     0xfd, // 0x1c: REVERT (unknown selector)
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x1d-0x29: padding
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, // 0x1d-0x29: padding
     0x5b, // 0x2a: JUMPDEST (set)
     0x60, 0x04, // 0x2b: PUSH1 0x04
     0x35, // 0x2d: CALLDATALOAD (uint arg)
@@ -59,7 +60,7 @@ pub fn deploy_init(runtime: &[u8]) -> Vec<u8> {
     );
     let (len, off) = (runtime.len() as u8, 13u8);
     let mut init = vec![
-        0x60, len, // PUSH1 len
+        0x60, len,  // PUSH1 len
         0x80, // DUP1
         0x60, off, // PUSH1 13 (code offset of embedded runtime)
         0x60, 0x00, // PUSH1 0x00 (memory dest)
@@ -98,8 +99,14 @@ mod tests {
         assert_eq!(SIMPLE_STORAGE_RUNTIME[0x2a], 0x5b, "set JUMPDEST");
         assert_eq!(SIMPLE_STORAGE_RUNTIME[0x33], 0x5b, "get JUMPDEST");
         // Selectors embedded at the documented offsets.
-        assert_eq!(&SIMPLE_STORAGE_RUNTIME[0x08..0x0c], SIMPLE_STORAGE_SET_SELECTOR);
-        assert_eq!(&SIMPLE_STORAGE_RUNTIME[0x11..0x15], SIMPLE_STORAGE_GET_SELECTOR);
+        assert_eq!(
+            &SIMPLE_STORAGE_RUNTIME[0x08..0x0c],
+            SIMPLE_STORAGE_SET_SELECTOR
+        );
+        assert_eq!(
+            &SIMPLE_STORAGE_RUNTIME[0x11..0x15],
+            SIMPLE_STORAGE_GET_SELECTOR
+        );
         // Init-code round trip: prefix 13 bytes, runtime at offset 13.
         let init = deploy_init(SIMPLE_STORAGE_RUNTIME);
         assert_eq!(init.len(), 13 + SIMPLE_STORAGE_RUNTIME.len());

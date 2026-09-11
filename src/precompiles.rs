@@ -134,18 +134,40 @@ impl<CTX: ContextTr> PrecompileProvider<CTX> for KanariPrecompiles {
     }
 }
 
+/// Parameters for [`build_kanari_evm`] (grouped to avoid `too_many_arguments`).
+#[derive(Debug, Clone, Copy)]
+pub struct KanariEvmParams {
+    /// EIP-155 chain id.
+    pub chain_id: u64,
+    /// Hardfork spec id.
+    pub spec: SpecId,
+    /// Block number.
+    pub number: u64,
+    /// Block timestamp (secs).
+    pub timestamp: u64,
+    /// Block base fee (wei).
+    pub basefee: u64,
+    /// Block gas limit.
+    pub gas_limit: u64,
+    /// Block beneficiary (fee recipient).
+    pub beneficiary: Address,
+}
+
 /// Build a Kanari EVM over a borrowed database with chain cfg + block env set.
 pub fn build_kanari_evm(
     db: &mut InMemoryDB,
-    chain_id: u64,
-    spec: SpecId,
-    number: u64,
-    timestamp: u64,
-    basefee: u64,
-    gas_limit: u64,
-    beneficiary: revm::primitives::Address,
+    params: KanariEvmParams,
 ) -> KanariEvm<MainnetContext<&mut InMemoryDB>> {
     use revm::primitives::U256;
+    let KanariEvmParams {
+        chain_id,
+        spec,
+        number,
+        timestamp,
+        basefee,
+        gas_limit,
+        beneficiary,
+    } = params;
     let ctx = Context::mainnet()
         .with_db(db)
         .modify_cfg_chained(|cfg| {

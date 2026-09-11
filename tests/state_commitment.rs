@@ -11,7 +11,7 @@ use alloy_primitives::{Bytes, TxKind, U256};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
 use kanari_evm::{
-    DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, CallRequest,
+    CallRequest, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
     KanariChainSpec, KanariNode,
 };
 

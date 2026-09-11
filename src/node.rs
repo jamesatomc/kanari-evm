@@ -569,13 +569,15 @@ impl KanariNode {
     ) -> crate::precompiles::KanariEvm<MainnetContext<&mut InMemoryDB>> {
         crate::precompiles::build_kanari_evm(
             &mut self.db,
-            self.spec.chain_id,
-            self.spec.spec_id,
-            number,
-            timestamp,
-            DEFAULT_BASE_FEE_WEI as u64,
-            BLOCK_GAS_LIMIT,
-            BLOCK_BENEFICIARY,
+            crate::precompiles::KanariEvmParams {
+                chain_id: self.spec.chain_id,
+                spec: self.spec.spec_id,
+                number,
+                timestamp,
+                basefee: DEFAULT_BASE_FEE_WEI as u64,
+                gas_limit: BLOCK_GAS_LIMIT,
+                beneficiary: BLOCK_BENEFICIARY,
+            },
         )
     }
 
