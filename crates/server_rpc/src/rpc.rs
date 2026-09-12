@@ -17,7 +17,7 @@ use axum::{
 };
 use kanari_evm_move_execution::{
     execution::CallRequest,
-    node::{DEFAULT_BASE_FEE_WEI, KanariNode, NodeError, SharedNode},
+    node::{BLOCK_GAS_LIMIT, KanariNode, NodeError, SharedNode},
     render_sealed_log,
 };
 use serde::{Deserialize, Serialize};
@@ -411,9 +411,10 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             }
         }
         "eth_feeHistory" => {
-            // Minimal static response: constant base fee, empty blocks. One
-            // reward entry per requested percentile (strict clients validate
-            // the shape).
+            // Real history over sealed blocks: per-block base fees walking
+            // back from newest, gas-use ratios, zero rewards (no priority
+            // data is tracked). One reward entry per requested percentile
+            // (strict clients validate the shape).
             let arr = params.as_array().cloned().unwrap_or_default();
             let count = arr
                 .first()
@@ -428,19 +429,41 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             let node = node.lock().await;
             let latest = node.block_number();
             let oldest = latest.saturating_sub(count as u64 - 1);
-            let base = quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI));
+            let mut base_fees = Vec::with_capacity(count + 1);
+            let mut ratios = Vec::with_capacity(count);
+            for n in oldest..=latest {
+                match node.block_by_number(n) {
+                    Some(block) => {
+                        base_fees.push(quantity_u256(U256::from(block.base_fee)));
+                        ratios.push(node.block_gas_used(n) as f64 / BLOCK_GAS_LIMIT as f64);
+                    }
+                    None => {
+                        // Synthetic genesis / gaps: pending fee, zero usage.
+                        base_fees.push(quantity_u256(U256::from(node.pending_base_fee())));
+                        ratios.push(0.0);
+                    }
+                }
+            }
+            // Trailing entry: the NEXT (pending) block's fee.
+            base_fees.push(quantity_u256(U256::from(node.pending_base_fee())));
             ok(
                 id,
                 json!({
                     "oldestBlock": quantity_u64(oldest),
-                    "baseFeePerGas": vec![base.clone(); count + 1],
-                    "gasUsedRatio": vec![0.0; count],
+                    "baseFeePerGas": base_fees,
+                    "gasUsedRatio": ratios,
                     "reward": vec![vec!["0x0"; n_rewards]; count],
                 }),
             )
         }
-        "eth_gasPrice" => ok(id, quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI))),
-        "eth_maxPriorityFeePerGas" => ok(id, quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI))),
+        "eth_gasPrice" => {
+            let node = node.lock().await;
+            ok(id, quantity_u256(U256::from(node.pending_base_fee())))
+        }
+        "eth_maxPriorityFeePerGas" => {
+            let node = node.lock().await;
+            ok(id, quantity_u256(U256::from(node.pending_base_fee())))
+        }
         "eth_getBalance" => {
             let arr = params.as_array().cloned().unwrap_or_default();
             let Some(addr_v) = arr.first() else {

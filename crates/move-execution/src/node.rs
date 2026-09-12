@@ -35,19 +35,17 @@ use std::{
 };
 use tokio::sync::{Mutex, mpsc};
 
-/// Base fee charged by every sealed block (1 gwei, Anvil-style).
-pub const DEFAULT_BASE_FEE_WEI: u128 = 1_000_000_000;
 /// Max drip per faucet call (whole ETH).
 pub const MAX_FAUCET_ETH_PER_REQUEST: u128 = 10_000;
 /// Wei per whole ETH.
 pub const WEI_IN_ETH: u128 = 1_000_000_000_000_000_000;
-/// Block gas limit for sealed blocks.
-pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
+/// Block gas limit for sealed blocks. Single source in `evm-types`.
+pub use kanari_evm_types::gas::BLOCK_GAS_LIMIT;
 /// Default gas for `eth_call`/`eth_estimateGas` when the caller omits it.
 /// Must stay below revm's per-transaction cap of 2^24 (16_777_216).
 pub const DEFAULT_CALL_GAS: u64 = 15_000_000;
-/// Block beneficiary: priority fees accrue to the treasury account on this
-/// dev chain (base fee is still burned per EIP-1559).
+/// Block beneficiary: all fees (base + priority — Kanari does not burn)
+/// accrue to the treasury account on this dev chain.
 pub const BLOCK_BENEFICIARY: Address =
     alloy_primitives::address!("0x7985132aa87aD878a1fCb69Fa62b301f4CDe4ccA");
 
@@ -264,6 +262,37 @@ impl KanariNode {
         self.receipts.get(hash)
     }
 
+    /// Gas used by a sealed block (sum of its receipts, 0 for the synthetic
+    /// genesis view and unknown numbers).
+    pub fn block_gas_used(&self, number: u64) -> u64 {
+        let Some(block) = self.block_by_number(number) else {
+            return 0;
+        };
+        block
+            .txs
+            .iter()
+            .map(|raw| {
+                let hash = keccak256(raw);
+                self.receipts.get(&hash).map(|r| r.gas_used).unwrap_or(0)
+            })
+            .sum()
+    }
+
+    /// Base fee (wei) the NEXT sealed block executes under: EIP-1559
+    /// dynamics applied to the head block, or the genesis base fee when
+    /// nothing is sealed yet. Pure function of sealed history, hence
+    /// identical on every validator.
+    pub fn pending_base_fee(&self) -> u128 {
+        match self.blocks.last() {
+            None => self.spec.base_fee_wei,
+            Some(head) => calc_next_base_fee(
+                head.base_fee as u128,
+                self.block_gas_used(head.number) as u128,
+                BLOCK_GAS_LIMIT as u128,
+            ),
+        }
+    }
+
     /// Circulating supply and protocol max supply, in wei.
     ///
     /// No minting exists after genesis (fees only move value to the block
@@ -279,7 +308,13 @@ impl KanariNode {
             .saturating_mul(U256::from(WEI_IN_ETH));
         (total, max)
     }
+}
 
+/// EIP-1559 base-fee math. Single source in `evm-types` (re-exported here
+/// so node-adjacent code keeps one import root).
+pub use kanari_evm_types::gas::calc_next_base_fee;
+
+impl KanariNode {
     /// One-time migration of a legacy JSON journal into RocksDB: verify and
     /// persist metadata, migrate the faucet sidecar, rename the legacy file
     /// aside and drop superseded sidecars. Returns the legacy blocks for the

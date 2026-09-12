@@ -28,14 +28,14 @@ pub mod state;
 pub mod views;
 
 pub use chainspec::{
-    DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
-    KANARI_EVM_MAX_SUPPLY_ETH, KanariChainSpec,
+    DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, GENESIS_BASE_FEE_WEI, KANARI_EVM_DEV_CHAIN_ID,
+    KANARI_EVM_GENESIS_SPEC, KANARI_EVM_MAX_SUPPLY_ETH, KanariChainSpec,
 };
 pub use execution::CallRequest;
 pub use faucet::generate_faucet_key;
 pub use node::{
-    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, KanariNode,
-    MAX_FAUCET_ETH_PER_REQUEST, NodeMetrics, SharedNode, WEI_IN_ETH,
+    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, KanariNode,
+    MAX_FAUCET_ETH_PER_REQUEST, NodeMetrics, SharedNode, WEI_IN_ETH, calc_next_base_fee,
 };
 pub use state::SmtProof;
 pub use views::{SealedLog, render_sealed_log};

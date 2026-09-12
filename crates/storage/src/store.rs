@@ -38,6 +38,15 @@ pub struct SealedBlock {
     /// state commitments existed (filled in on replay upgrade).
     #[serde(default)]
     pub state_root: Option<B256>,
+    /// Base fee (wei) this block executed under. Defaults to the long-time
+    /// 1 gwei for blocks sealed before dynamic fees existed.
+    #[serde(default = "default_base_fee_wei")]
+    pub base_fee: u64,
+}
+
+/// Default for pre-dynamic-fee blocks: 1 gwei, the chain's original flat fee.
+fn default_base_fee_wei() -> u64 {
+    1_000_000_000
 }
 
 /// Minimal receipt stored per transaction.

@@ -52,16 +52,23 @@ transactions (`send_raw_transaction`), seals one block per transaction, and
 replays sealed blocks on startup; `state.rs` serves point reads and rebuilds
 the sparse Merkle tree commitment after every transition; `views.rs`
 renders RPC shapes; `faucet.rs` holds the dev drip account.
-
-Chain parameters: chain id `19088`, 1 gwei base fee (Anvil-style),
-30M block gas limit. **Kanari fee policy — no burn**: the block beneficiary
+Chain parameters: chain id `19088`, 30M block gas limit, genesis base fee
+1 gwei (overridable per chain via `KanariChainSpec::with_base_fee`).
+**Dynamic base fee (EIP-1559)**: every block's fee derives from the
+parent's fullness (±12.5% around the 15M gas target, 1-wei floor) —
+`pending_base_fee()` is a pure function of sealed history, so all
+validators quote identically. Stored per block (`SealedBlock.base_fee`);
+replay re-seals under the STORED fee so pre-dynamic chains re-verify
+byte-for-byte.
+**Kanari fee policy — no burn**: the block beneficiary
 (`0x7985…ccA`) receives the FULL fee (base + priority) of every
 transaction. revm credits the priority share during execution; the base
-share (`gas_used × basefee`, destroyed by vanilla EIP-1559) is credited to
-the beneficiary at seal time instead. The sender already paid exactly that
-amount, so supply is conserved and every validator computes the identical
-credit. Genesis holds the full 11M supply at the dev account (`0xC88C…`);
-the faucet gets no genesis allocation and must be funded by transfer.
+share (`gas_used × base_fee`, destroyed by vanilla EIP-1559) is credited
+to the beneficiary at seal time instead. The sender already paid exactly
+that amount, so supply is conserved and every validator computes the
+identical credit. Genesis holds the full 11M supply at the dev account
+(`0xC88C…`); the faucet gets no genesis allocation and must be funded by
+transfer.
 
 Post-quantum precompiles (`precompiles.rs`, à la EIP-8052/8053):
 

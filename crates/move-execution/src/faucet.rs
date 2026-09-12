@@ -8,7 +8,7 @@
 //! keep working.
 
 use crate::node::{
-    DEFAULT_BASE_FEE_WEI, KanariNode, MAX_FAUCET_ETH_PER_REQUEST, NodeError, WEI_IN_ETH,
+    KanariNode, MAX_FAUCET_ETH_PER_REQUEST, NodeError, WEI_IN_ETH,
 };
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
@@ -63,7 +63,10 @@ impl KanariNode {
             .map_err(|e| NodeError::Storage(format!("bad faucet key: {e}")))?;
         let from = signer_address(&signer);
         let balance = self.balance_of(from)?;
-        let gas_cost = U256::from(21_000u128 * DEFAULT_BASE_FEE_WEI);
+        // Price the drip at the pending base fee so it stays valid as fees
+        // drift; priority matches base (dev generosity, not economics).
+        let fee = self.pending_base_fee();
+        let gas_cost = U256::from(21_000u128.saturating_mul(fee));
         if balance < amount_wei + gas_cost {
             return Err(NodeError::Execution("faucet account is dry".to_string()));
         }
@@ -76,8 +79,8 @@ impl KanariNode {
             value: amount_wei,
             input: Bytes::new(),
             access_list: Default::default(),
-            max_fee_per_gas: DEFAULT_BASE_FEE_WEI,
-            max_priority_fee_per_gas: DEFAULT_BASE_FEE_WEI,
+            max_fee_per_gas: fee,
+            max_priority_fee_per_gas: fee,
         };
         let sighash = tx.signature_hash();
         let sig = signer

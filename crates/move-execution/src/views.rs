@@ -9,21 +9,23 @@
 //! placeholders (see `node.rs`), which wallets accept but which must NOT be
 //! mistaken for full L1 validity proofs.
 
-use crate::node::{BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, KanariNode};
+use crate::node::{BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, KanariNode};
 use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256, keccak256};
 use kanari_evm_storage::{SealedBlock, StoredLog, StoredReceipt};
-use kanari_evm_types::{
-    hex_prefixed as bytes_hex, quantity_u64 as quantity, quantity_u256,
-};
+use kanari_evm_types::{hex_prefixed as bytes_hex, quantity_u64 as quantity, quantity_u256};
 
 impl KanariNode {
     /// Standard `eth_getTransactionByHash` view (v/r/s omitted).
     pub fn tx_view(&self, hash: &B256) -> Option<serde_json::Value> {
         let receipt = self.receipts.get(hash)?;
         let (sender, raw) = self.tx_record(hash)?;
-        let view = decode_tx_view(raw)?;
+        let base_fee = self
+            .block_by_number(receipt.block_number)
+            .map(|b| b.base_fee as u128)
+            .unwrap_or(self.spec.base_fee_wei);
+        let view = decode_tx_view(raw, base_fee)?;
         Some(serde_json::json!({
             "hash": hash.to_string(),
             "nonce": quantity(view.nonce),
@@ -44,6 +46,17 @@ impl KanariNode {
     /// Standard `eth_getTransactionReceipt` view.
     pub fn receipt_view(&self, hash: &B256) -> Option<serde_json::Value> {
         let r = self.receipts.get(hash)?;
+        let base_fee = self
+            .block_by_number(r.block_number)
+            .map(|b| b.base_fee as u128)
+            .unwrap_or(self.spec.base_fee_wei);
+        // Exact type and effective price from the sealed bytes when
+        // decodable; otherwise the common EIP-1559-at-basefee rendering.
+        let (tx_type, effective) = self
+            .tx_record(hash)
+            .and_then(|(_, raw)| decode_tx_view(raw, base_fee))
+            .map(|v| (v.tx_type as u64, v.effective_gas_price))
+            .unwrap_or((2, U256::from(base_fee)));
         let logs: Vec<serde_json::Value> = r
             .logs
             .iter()
@@ -60,9 +73,9 @@ impl KanariNode {
             "contractAddress": r.contract_address.map(|a| a.to_string()),
             "cumulativeGasUsed": quantity(r.gas_used),
             "gasUsed": quantity(r.gas_used),
-            "effectiveGasPrice": quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI)),
+            "effectiveGasPrice": quantity_u256(effective),
             "status": if r.success { "0x1" } else { "0x0" },
-            "type": "0x2",
+            "type": quantity(tx_type),
             "logs": logs,
             "logsBloom": format!("0x{}", "00".repeat(256)),
         }))
@@ -107,6 +120,7 @@ impl KanariNode {
                 B256::ZERO,
                 0,
                 self.genesis_root,
+                self.spec.base_fee_wei,
                 full_txs,
             ));
         }
@@ -153,7 +167,7 @@ impl KanariNode {
             "timestamp": quantity(block.timestamp),
             "extraData": "0x",
             "mixHash": B256::ZERO.to_string(),
-            "baseFeePerGas": quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI)),
+            "baseFeePerGas": quantity_u256(U256::from(block.base_fee)),
             "transactions": txs,
             "uncles": [],
         }))
@@ -168,6 +182,7 @@ impl KanariNode {
                 B256::ZERO,
                 0,
                 self.genesis_root,
+                self.spec.base_fee_wei,
                 full_txs,
             ));
         }
@@ -237,7 +252,7 @@ struct TxView {
     chain_id: u64,
 }
 
-fn decode_tx_view(raw: &[u8]) -> Option<TxView> {
+fn decode_tx_view(raw: &[u8], base_fee_wei: u128) -> Option<TxView> {
     let envelope = TxEnvelope::decode_2718_exact(raw).ok()?;
     match &envelope {
         TxEnvelope::Legacy(signed) => {
@@ -274,9 +289,11 @@ fn decode_tx_view(raw: &[u8]) -> Option<TxView> {
         }
         TxEnvelope::Eip1559(signed) => {
             let tx = signed.tx();
-            let effective = tx
-                .max_fee_per_gas
-                .min(DEFAULT_BASE_FEE_WEI + tx.max_priority_fee_per_gas);
+            let effective = kanari_evm_types::gas::effective_gas_price(
+                tx.max_fee_per_gas,
+                base_fee_wei,
+                tx.max_priority_fee_per_gas,
+            );
             Some(TxView {
                 nonce: tx.nonce,
                 gas_limit: tx.gas_limit,
@@ -293,9 +310,11 @@ fn decode_tx_view(raw: &[u8]) -> Option<TxView> {
         }
         TxEnvelope::Eip7702(signed) => {
             let tx = signed.tx();
-            let effective = tx
-                .max_fee_per_gas
-                .min(DEFAULT_BASE_FEE_WEI + tx.max_priority_fee_per_gas);
+            let effective = kanari_evm_types::gas::effective_gas_price(
+                tx.max_fee_per_gas,
+                base_fee_wei,
+                tx.max_priority_fee_per_gas,
+            );
             Some(TxView {
                 nonce: tx.nonce,
                 gas_limit: tx.gas_limit,
@@ -318,6 +337,7 @@ fn empty_block_view(
     parent_hash: B256,
     timestamp: u64,
     state_root: B256,
+    base_fee_wei: u128,
     _full_txs: bool,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -338,7 +358,7 @@ fn empty_block_view(
         "timestamp": quantity(timestamp),
         "extraData": "0x",
         "mixHash": B256::ZERO.to_string(),
-        "baseFeePerGas": quantity_u256(U256::from(DEFAULT_BASE_FEE_WEI)),
+        "baseFeePerGas": quantity_u256(U256::from(base_fee_wei)),
         "transactions": [],
         "uncles": [],
     })

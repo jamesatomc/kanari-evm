@@ -10,7 +10,7 @@
 //! semantics: gas is still charged and the nonce advances).
 
 use crate::node::{
-    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, DEFAULT_CALL_GAS, KanariNode,
+    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_CALL_GAS, KanariNode,
     NodeError,
 };
 use crate::precompiles::{KanariEvmParams, build_kanari_evm};
@@ -41,7 +41,7 @@ impl KanariNode {
         let tx = TxEnv {
             caller,
             gas_limit: call.gas.unwrap_or(DEFAULT_CALL_GAS),
-            gas_price: call.gas_price.unwrap_or(DEFAULT_BASE_FEE_WEI),
+            gas_price: call.gas_price.unwrap_or_else(|| self.pending_base_fee()),
             kind: match call.to {
                 Some(to) => RevmTxKind::Call(to),
                 None => RevmTxKind::Create,
@@ -100,6 +100,16 @@ impl KanariNode {
         number: u64,
         timestamp: u64,
     ) -> crate::precompiles::KanariEvm<MainnetContext<&mut InMemoryDB>> {
+        let basefee = self.pending_base_fee() as u64;
+        self.evm_for_block_with_fee(number, timestamp, basefee)
+    }
+
+    fn evm_for_block_with_fee(
+        &mut self,
+        number: u64,
+        timestamp: u64,
+        basefee: u64,
+    ) -> crate::precompiles::KanariEvm<MainnetContext<&mut InMemoryDB>> {
         build_kanari_evm(
             &mut self.db,
             KanariEvmParams {
@@ -107,7 +117,7 @@ impl KanariNode {
                 spec: self.spec.spec_id,
                 number,
                 timestamp,
-                basefee: DEFAULT_BASE_FEE_WEI as u64,
+                basefee,
                 gas_limit: BLOCK_GAS_LIMIT,
                 beneficiary: BLOCK_BENEFICIARY,
             },
@@ -117,10 +127,17 @@ impl KanariNode {
     /// Replay sealed blocks (from RocksDB or a legacy journal) into memory,
     /// verifying hashes and state roots. Any failure is a hard error.
     /// Callers reset to genesis first; this only executes and verifies.
+    /// Replays seal under each block's STORED base fee, so chains sealed
+    /// before dynamic fees re-verify exactly instead of being rewritten.
     pub(crate) fn replay_blocks(&mut self, blocks: Vec<SealedBlock>) -> Result<(), NodeError> {
         for block in blocks {
             for raw in &block.txs {
-                let hash = self.seal_raw(raw.clone(), block.number, block.timestamp)?;
+                let hash = self.seal_raw_with_fee(
+                    raw.clone(),
+                    block.number,
+                    block.timestamp,
+                    block.base_fee,
+                )?;
                 let sealed = self.blocks.last().expect("just sealed");
                 if sealed.hash != block.hash {
                     return Err(NodeError::Storage(format!(
@@ -166,15 +183,32 @@ impl KanariNode {
     /// Decode, execute, commit to revm state, update the SMT commitment and
     /// seal a block, persisting it atomically (block + receipts + tx index
     /// + height) to RocksDB.
+    ///
+    /// The block executes under the pending base fee (EIP-1559 dynamics
+    /// over sealed history).
     pub(crate) fn seal_raw(
         &mut self,
         raw: Bytes,
         number: u64,
         timestamp: u64,
     ) -> Result<B256, NodeError> {
+        let base_fee = self.pending_base_fee() as u64;
+        self.seal_raw_with_fee(raw, number, timestamp, base_fee)
+    }
+
+    /// Seal exactly like [`KanariNode::seal_raw`], but under an explicit base
+    /// fee. Replay uses the STORED block fee so pre-dynamic-fee chains
+    /// re-verify byte-for-byte instead of being rewritten by new dynamics.
+    fn seal_raw_with_fee(
+        &mut self,
+        raw: Bytes,
+        number: u64,
+        timestamp: u64,
+        base_fee: u64,
+    ) -> Result<B256, NodeError> {
         let prepared = PreparedTx::decode(&raw, self.spec.chain_id)?;
         let parent_hash = next_parent_hash(&self.blocks);
-        let mut evm = self.evm_for_block(number, timestamp);
+        let mut evm = self.evm_for_block_with_fee(number, timestamp, base_fee);
         let output = evm
             .transact(prepared.tx_env())
             .map_err(|e| NodeError::Execution(e.to_string()))?;
@@ -182,13 +216,11 @@ impl KanariNode {
         let (success, gas_used, created, logs) = execution_summary(&output.result);
         // Kanari fee policy: NO burn. revm already credited the priority fee
         // to the beneficiary during execution; the base-fee share
-        // (`gas_used * basefee`, destroyed by vanilla EIP-1559) is credited
+        // (`gas_used * base_fee`, destroyed by vanilla EIP-1559) is credited
         // here instead. The sender already paid exactly this amount, so this
         // is a pure transfer — supply is conserved, and every validator
         // computes the identical credit from the identical receipt.
-        // Invariant: block basefee is always DEFAULT_BASE_FEE_WEI (see
-        // `evm_for_block`), so the burned share is exactly this product.
-        let burned = U256::from(gas_used).saturating_mul(U256::from(DEFAULT_BASE_FEE_WEI));
+        let burned = kanari_evm_types::gas::base_fee_share(gas_used, base_fee as u128);
         if !burned.is_zero() {
             self.credit_beneficiary(burned)?;
         }
@@ -202,6 +234,7 @@ impl KanariNode {
             parent_hash,
             txs: vec![raw],
             state_root: Some(state_root),
+            base_fee,
         };
         let receipt = StoredReceipt {
             tx_hash: hash,

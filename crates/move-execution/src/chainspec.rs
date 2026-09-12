@@ -31,6 +31,10 @@ pub const DEV_FUNDED_BALANCE: u128 = 11_000_000_000_000_000_000_000_000;
 /// so circulating supply is always the genesis-allocation sum below.
 pub const KANARI_EVM_MAX_SUPPLY_ETH: u128 = 11_000_000;
 
+/// Genesis base fee (wei): 1 gwei, the flat fee every chain starts from
+/// before EIP-1559 dynamics take over. Single source in `evm-types`.
+pub use kanari_evm_types::gas::GENESIS_BASE_FEE_WEI;
+
 /// Minimal chain spec: id + active hardfork + genesis allocations.
 #[derive(Debug, Clone)]
 pub struct KanariChainSpec {
@@ -40,6 +44,9 @@ pub struct KanariChainSpec {
     pub spec_id: SpecId,
     /// Genesis allocations as (address, balance in wei).
     pub genesis_alloc: Vec<(Address, U256)>,
+    /// Base fee (wei) of the genesis block. Block 1+ adjust from here by
+    /// EIP-1559 dynamics; tune per environment (LAN devnets can start lower).
+    pub base_fee_wei: u128,
 }
 
 impl KanariChainSpec {
@@ -49,6 +56,7 @@ impl KanariChainSpec {
             chain_id: KANARI_EVM_DEV_CHAIN_ID,
             spec_id: KANARI_EVM_GENESIS_SPEC,
             genesis_alloc: vec![(DEV_FUNDED_ACCOUNT, U256::from(DEV_FUNDED_BALANCE))],
+            base_fee_wei: GENESIS_BASE_FEE_WEI,
         }
     }
 
@@ -58,7 +66,14 @@ impl KanariChainSpec {
             chain_id,
             spec_id,
             genesis_alloc,
+            base_fee_wei: GENESIS_BASE_FEE_WEI,
         }
+    }
+
+    /// Override the genesis base fee (builder style).
+    pub fn with_base_fee(mut self, base_fee_wei: u128) -> Self {
+        self.base_fee_wei = base_fee_wei.max(1);
+        self
     }
 
     /// Writes genesis allocations into an in-memory database.

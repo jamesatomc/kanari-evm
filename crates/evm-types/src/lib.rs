@@ -8,6 +8,8 @@
 //! Leaf by design: only `alloy-primitives` + `thiserror`, so every crate
 //! can depend on this without cycles.
 
+pub mod gas;
+
 use alloy_primitives::U256;
 
 /// Hex codec errors.
