@@ -26,8 +26,8 @@ use alloy_signer_local::PrivateKeySigner;
 use clap::{Parser, Subcommand, ValueEnum};
 use kanari_evm_consensus::{ValidatorNode, ValidatorOpts};
 use kanari_evm_move_execution::{
-    DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, FAUCET_GENESIS_ETH, KANARI_EVM_DEV_CHAIN_ID,
-    KANARI_EVM_GENESIS_SPEC, KanariChainSpec, KanariNode, generate_faucet_key,
+    DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
+    KanariChainSpec, KanariNode, MAX_FAUCET_ETH_PER_REQUEST, generate_faucet_key,
 };
 use kanari_evm_rpc::rpc;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -86,7 +86,7 @@ impl LogLevel {
 fn init_logging(level: &str) -> Result<(), String> {
     use tracing_subscriber::{EnvFilter, fmt};
     let filter = EnvFilter::try_new(format!(
-        "kanari_evm_consensus={level},kanari_evm_rpc={level},kanari_evm_node={level}"
+        "kanari_evm_consensus={level},kanari_evm_rpc={level},kanari_evm_node={level},kanari_evm_move_execution={level}"
     ))
     .map_err(|e| format!("invalid log level '{level}': {e}"))?;
     fmt()
@@ -151,6 +151,60 @@ fn load_validator_file(path: &std::path::Path) -> ValidatorFileConfig {
         .unwrap_or_else(|e| fatal(&format!("cannot read --config {}: {e}", path.display())));
     toml::from_str(&raw)
         .unwrap_or_else(|e| fatal(&format!("invalid --config {}: {e}", path.display())))
+}
+
+/// Raw validator settings from CLI flags (all optional — `--config` may
+/// supply them).
+struct ValidatorCli {
+    committee: Option<std::path::PathBuf>,
+    key: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
+    rpc_port: Option<u16>,
+    rpc_host: Option<String>,
+    faucet_key: Option<String>,
+    log_level: Option<LogLevel>,
+}
+
+/// Merged validator settings after applying CLI > file > default precedence.
+#[derive(Debug)]
+struct ResolvedValidator {
+    committee: std::path::PathBuf,
+    key: std::path::PathBuf,
+    data_dir: Option<std::path::PathBuf>,
+    rpc_port: Option<u16>,
+    rpc_host: String,
+    faucet_key: Option<String>,
+    log_level: String,
+}
+
+/// Merge CLI flags over an optional TOML file. Pure (no I/O) for testability;
+/// the caller turns `Err` into a fatal CLI error.
+fn resolve_validator_config(
+    cli: ValidatorCli,
+    file: ValidatorFileConfig,
+) -> Result<ResolvedValidator, String> {
+    Ok(ResolvedValidator {
+        committee: cli
+            .committee
+            .or(file.committee)
+            .ok_or_else(|| "--committee is required (or set committee in --config)".to_string())?,
+        key: cli
+            .key
+            .or(file.key)
+            .ok_or_else(|| "--key is required (or set key in --config)".to_string())?,
+        data_dir: cli.data_dir.or(file.data_dir),
+        rpc_port: cli.rpc_port.or(file.rpc_port),
+        rpc_host: cli
+            .rpc_host
+            .or(file.rpc_host)
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+        faucet_key: cli.faucet_key.or(file.faucet_key),
+        log_level: cli
+            .log_level
+            .map(|l| l.as_str().to_string())
+            .or(file.log_level)
+            .unwrap_or_else(|| "info".to_string()),
+    })
 }
 
 /// Kanari EVM node command-line interface.
@@ -367,7 +421,10 @@ async fn run(opts: StartOptions) {
         }
         None => None,
     };
-    let spec = if opts.faucets.is_empty() && faucet_secret.is_none() {
+    // Genesis holds the FULL supply at the dev account only. The faucet gets
+    // NO genesis allocation: fund it with a plain transfer from the dev
+    // account before dripping (dev key: Anvil default #0).
+    let spec = if opts.faucets.is_empty() {
         KanariChainSpec::devnet()
     } else {
         if !fresh {
@@ -378,12 +435,6 @@ async fn run(opts: StartOptions) {
             for (addr, eth) in &opts.faucets {
                 alloc.push((*addr, U256::from(eth.saturating_mul(WEI_IN_ETH))));
             }
-            if let Some((addr, _)) = &faucet_secret {
-                alloc.push((
-                    *addr,
-                    U256::from(FAUCET_GENESIS_ETH.saturating_mul(WEI_IN_ETH)),
-                ));
-            }
         }
         KanariChainSpec::with_alloc(KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, alloc)
     };
@@ -393,7 +444,17 @@ async fn run(opts: StartOptions) {
     if let Some((addr, secret)) = faucet_secret {
         node.set_faucet_key(secret)
             .unwrap_or_else(|e| fatal(&format!("failed to store faucet key: {e}")));
-        println!("faucet funded with {} ETH for {addr}", FAUCET_GENESIS_ETH);
+        let funded = node
+            .balance_of(addr)
+            .map(|b| b >= U256::from(MAX_FAUCET_ETH_PER_REQUEST * WEI_IN_ETH))
+            .unwrap_or(false);
+        if funded {
+            println!("faucet enabled for {addr}");
+        } else {
+            println!(
+                "faucet enabled for {addr} with ZERO balance — fund it first with a transfer from the dev account {DEV_FUNDED_ACCOUNT}"
+            );
+        }
     } else {
         match node.load_faucet_key() {
             Ok(true) => println!(
@@ -533,29 +594,28 @@ async fn run_validator(
     }
     let rpc_port = rpc_port.unwrap_or_else(|| identity.own_address.port() + 1);
 
-    // Genesis MUST be identical on all validators or state roots diverge.
-    // devnet() is deterministic; the faucet is opt-in shared (no auto-gen).
-    let spec = match faucet_key {
-        Some(secret) => {
-            let signer = PrivateKeySigner::from_bytes(&secret)
-                .unwrap_or_else(|_| fatal("invalid --faucet-key secret"));
-            let addr = signer.address();
-            let mut alloc = vec![(DEV_FUNDED_ACCOUNT, U256::from(DEV_FUNDED_BALANCE))];
-            alloc.push((
-                addr,
-                U256::from(FAUCET_GENESIS_ETH.saturating_mul(WEI_IN_ETH)),
-            ));
-            KanariChainSpec::with_alloc(KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, alloc)
-        }
-        None => KanariChainSpec::devnet(),
-    };
+    // Genesis MUST be identical on all validators or state roots diverge:
+    // the FULL supply sits at the dev account. A shared faucet key only
+    // installs the dripping key — fund that account with a transfer from
+    // the dev account before dripping (same key everywhere).
+    let spec = KanariChainSpec::devnet();
     let state_file = data_dir.join("state.json");
     let mut node = KanariNode::open(spec, &state_file)
         .unwrap_or_else(|e| fatal(&format!("failed to open node: {e}")));
     if let Some(secret) = faucet_key {
         node.set_faucet_key(secret)
             .unwrap_or_else(|e| fatal(&format!("failed to store faucet key: {e}")));
-        println!("shared faucet enabled (all validators must use the same key)");
+        let signer = PrivateKeySigner::from_bytes(&secret)
+            .unwrap_or_else(|_| fatal("invalid --faucet-key secret"));
+        let addr = signer.address();
+        let funded = node.balance_of(addr).map(|b| !b.is_zero()).unwrap_or(false);
+        if funded {
+            println!("shared faucet enabled for {addr} (same key on all validators)");
+        } else {
+            println!(
+                "shared faucet key installed for {addr} with ZERO balance — fund it with a transfer from the dev account {DEV_FUNDED_ACCOUNT} first"
+            );
+        }
     } else {
         println!("faucet disabled (validator mode never auto-creates one)");
     }
@@ -671,27 +731,108 @@ async fn main() {
                 .as_deref()
                 .map(load_validator_file)
                 .unwrap_or_default();
-            let committee = committee
-                .or(file.committee)
-                .unwrap_or_else(|| fatal("--committee is required (or set committee in --config)"));
-            let key = key
-                .or(file.key)
-                .unwrap_or_else(|| fatal("--key is required (or set key in --config)"));
-            let rpc_host = rpc_host
-                .or(file.rpc_host)
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            let level = log_level.map(|l| l.as_str().to_string()).or(file.log_level);
-            init_logging(level.as_deref().unwrap_or("info")).unwrap_or_else(|e| fatal(&e));
-            let secret = faucet_key.or(file.faucet_key).as_deref().map(parse_secret);
+            let resolved = resolve_validator_config(
+                ValidatorCli {
+                    committee,
+                    key,
+                    data_dir,
+                    rpc_port,
+                    rpc_host,
+                    faucet_key,
+                    log_level,
+                },
+                file,
+            )
+            .unwrap_or_else(|e| fatal(&e));
+            init_logging(&resolved.log_level).unwrap_or_else(|e| fatal(&e));
+            let secret = resolved.faucet_key.as_deref().map(parse_secret);
             run_validator(
-                committee,
-                key,
-                data_dir.or(file.data_dir),
-                rpc_port.or(file.rpc_port),
-                rpc_host,
+                resolved.committee,
+                resolved.key,
+                resolved.data_dir,
+                resolved.rpc_port,
+                resolved.rpc_host,
                 secret,
             )
             .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_cli() -> ValidatorCli {
+        ValidatorCli {
+            committee: None,
+            key: None,
+            data_dir: None,
+            rpc_port: None,
+            rpc_host: None,
+            faucet_key: None,
+            log_level: None,
+        }
+    }
+
+    #[test]
+    fn config_file_fills_gaps_and_cli_wins() {
+        let file: ValidatorFileConfig = toml::from_str(
+            r#"
+            committee = "./dag-keys/dag-committee.json"
+            key = "./dag-keys/validator-1.key"
+            data_dir = "./data/node1"
+            rpc_host = "0.0.0.0"
+            rpc_port = 3501
+            log_level = "debug"
+            "#,
+        )
+        .expect("sample parses");
+        // File alone resolves (except optionals it omits).
+        let resolved = resolve_validator_config(test_cli(), file.clone()).expect("resolves");
+        assert_eq!(
+            resolved.committee,
+            PathBuf::from("./dag-keys/dag-committee.json")
+        );
+        assert_eq!(resolved.rpc_host, "0.0.0.0");
+        assert_eq!(resolved.rpc_port, Some(3501));
+        assert_eq!(resolved.log_level, "debug");
+        assert!(resolved.faucet_key.is_none());
+
+        // CLI flags override every file value.
+        let cli = ValidatorCli {
+            rpc_host: Some("127.0.0.1".to_string()),
+            rpc_port: Some(9999),
+            log_level: Some(LogLevel::Warn),
+            faucet_key: Some("0xabc".to_string()),
+            ..test_cli()
+        };
+        let resolved = resolve_validator_config(cli, file).expect("resolves");
+        assert_eq!(resolved.rpc_host, "127.0.0.1");
+        assert_eq!(resolved.rpc_port, Some(9999));
+        assert_eq!(resolved.log_level, "warn");
+        assert_eq!(resolved.faucet_key.as_deref(), Some("0xabc"));
+    }
+
+    #[test]
+    fn config_defaults_and_missing_required() {
+        // Empty file: defaults apply, required fields fail loudly.
+        let err = resolve_validator_config(test_cli(), ValidatorFileConfig::default())
+            .expect_err("missing committee must fail");
+        assert!(err.contains("--committee"), "unexpected: {err}");
+
+        let file = ValidatorFileConfig {
+            committee: Some(PathBuf::from("c.json")),
+            key: Some(PathBuf::from("k.key")),
+            ..Default::default()
+        };
+        let resolved = resolve_validator_config(test_cli(), file).expect("resolves");
+        assert_eq!(resolved.rpc_host, "127.0.0.1");
+        assert!(
+            resolved.rpc_port.is_none(),
+            "rpc port defaults to DAG+1 later"
+        );
+        assert_eq!(resolved.log_level, "info");
     }
 }

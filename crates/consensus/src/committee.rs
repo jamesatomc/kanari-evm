@@ -235,30 +235,13 @@ fn encode_pubkey(key: &PublicKey) -> Result<String, CommitteeError> {
             bytes.len()
         )));
     }
-    Ok(hex_of(&bytes))
+    Ok(kanari_evm_types::hex_encode(&bytes))
 }
 
 fn decode_pubkey(hex: &str) -> Result<PublicKey, String> {
-    let hex = hex.trim().trim_start_matches("0x");
-    if hex.len() != 64 {
-        return Err("want 32-byte hex".to_string());
-    }
-    let mut bytes = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk).map_err(|_| "non-hex key".to_string())?;
-        bytes[i] = u8::from_str_radix(s, 16).map_err(|_| "non-hex key".to_string())?;
-    }
+    let bytes =
+        kanari_evm_types::hex_decode32(hex).map_err(|e| format!("bad public key: {e}"))?;
     PublicKey::from_bytes(bytes).map_err(|e| e.to_string())
-}
-
-fn hex_of(bytes: &[u8]) -> String {
-    const CHARS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(CHARS[(b >> 4) as usize] as char);
-        out.push(CHARS[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

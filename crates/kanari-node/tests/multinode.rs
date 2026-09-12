@@ -29,10 +29,8 @@ const ONE_ETH_WEI: u128 = 1_000_000_000_000_000_000;
 const GWEI_WEI: u128 = 1_000_000_000;
 
 fn fresh_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "kanari-evm-multinode-{tag}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("kanari-evm-multinode-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
     dir
@@ -68,8 +66,8 @@ async fn four_validators_converge_on_execution() {
     // test range must stay small; RPC is not needed — validators are driven
     // in-process here).
     let base_dag_port = 3700;
-    let committee = generate_committee(4, IpAddr::from([127, 0, 0, 1]), base_dag_port, &dir)
-        .expect("keygen");
+    let committee =
+        generate_committee(4, IpAddr::from([127, 0, 0, 1]), base_dag_port, &dir).expect("keygen");
 
     let funder = PrivateKeySigner::random();
     let funder_addr = funder.address();

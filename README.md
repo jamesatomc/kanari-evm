@@ -47,7 +47,10 @@ chain id `19088` (a phone's `127.0.0.1` is itself, not this PC — bind
 
 ## Faucet (dev only, no auth)
 
-A fresh node prints its faucet account on first start. Fund any address:
+A fresh node prints its faucet account on first start. The faucet holds the
+FULL 11M supply at the dev account (`0xC88C…`) — the faucet account itself
+starts EMPTY, so fund it first with a plain transfer from the dev account
+(dev key: Anvil default #0), then drip to any address:
 
 ```powershell
 # via RPC params [address, whole-ETH]
@@ -57,6 +60,12 @@ curl http://127.0.0.1:8545/ -H "Content-Type: application/json" `
 
 Capped per request; the key persists in the data dir so restarts keep
 working. **Never use a real key with `--faucet-key`.**
+
+## Fees: no burn
+
+Unlike vanilla EIP-1559, the base fee is NOT burned — the block beneficiary
+(`0x7985…`) receives the full fee (base + priority) of every transaction.
+Supply is conserved: only the genesis allocation (11M at `0xC88C…`) mints.
 
 ## Repository layout
 
@@ -89,8 +98,7 @@ CI runs clippy + tests on Windows and Linux
 
 - `testnet` / `mainnet` have no EVM chain spec yet — `start` fails fast
   outside `devnet` instead of silently running dev parameters.
-- Block hashes are deterministic placeholders, receipts carry no logs
-  (`eth_getLogs` returns `[]`), and only the current state is queryable —
+- Block hashes are deterministic placeholders, and only the current state is queryable —
   this is a dev chain, not a full L1.
 - The full `reth` node (sync, MDBX, networking) stays a Linux/docker
   target; execution here builds on the published `revm` interpreter, which

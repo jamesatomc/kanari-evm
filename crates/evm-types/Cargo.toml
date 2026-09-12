@@ -1,0 +1,12 @@
+[package]
+name = "kanari-evm-types"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kanari EVM shared leaf primitives (hex and QUANTITY formatting)."
+
+[dependencies]
+alloy-primitives.workspace = true
+thiserror.workspace = true

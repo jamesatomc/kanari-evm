@@ -25,7 +25,6 @@
 
 use crate::committee::{CommitteeError, load_validator};
 use crate::ordering::DagOrdering;
-use kanari_evm_move_execution::node::SharedNode;
 use alloy_primitives::Bytes;
 use consensus::{committer::Committer, protocol::ConsensusProtocol};
 use dag::{
@@ -41,10 +40,14 @@ use dag::{
     storage::Storage,
     sync::{net_sync::NetworkSyncer, network::Network},
 };
+use kanari_evm_move_execution::node::SharedNode;
 use std::{path::PathBuf, time::Duration};
 
 /// Default DAG round timeout for validators.
 pub const DEFAULT_ROUND_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Seconds between liveness heartbeats while the mesh is quiet.
+const HEARTBEAT_SECS: u64 = 10;
 
 /// Cap for the commit-execution pending queue (see spawn); oldest payloads
 /// are dropped first once exceeded. Identical on all validators, so drops
@@ -100,13 +103,9 @@ impl ValidatorNode {
                 // NOTE: Storage::open takes a FILE path (it opens the WAL
                 // itself); passing the directory fails with "Access denied"
                 // on Windows. Mirrors mysticeti's storage-path.join("wal").
-                let (storage, recovered) = Storage::open(
-                    authority,
-                    dir.join("wal"),
-                    metrics.clone(),
-                    &committee,
-                )
-                .map_err(|e| ValidatorError::Storage(e.to_string()))?;
+                let (storage, recovered) =
+                    Storage::open(authority, dir.join("wal"), metrics.clone(), &committee)
+                        .map_err(|e| ValidatorError::Storage(e.to_string()))?;
                 (storage, recovered)
             }
             None => Storage::ephemeral(authority, metrics.clone(), &committee),
@@ -132,11 +131,14 @@ impl ValidatorNode {
         );
         let commit_handler = CommitHandler::new(transaction_time, metrics.clone());
 
-        let network =
-            Network::load(&loaded.dag_addresses, authority, loaded.own_address, metrics.clone())
-                .await;
-        let (commit_tx, mut commit_rx) =
-            tokio::sync::mpsc::channel::<CommittedSubDag>(1024);
+        let network = Network::load(
+            &loaded.dag_addresses,
+            authority,
+            loaded.own_address,
+            metrics.clone(),
+        )
+        .await;
+        let (commit_tx, mut commit_rx) = tokio::sync::mpsc::channel::<CommittedSubDag>(1024);
         let syncer = NetworkSyncer::start(
             network,
             core,
@@ -153,8 +155,11 @@ impl ValidatorNode {
         node.lock().await.set_dag_sender(dag_tx);
         tokio::spawn(async move {
             while let Some(batch) = dag_rx.recv().await {
-                let txs: Vec<Transaction> =
-                    batch.into_iter().map(|b| Transaction::new(b.into())).collect();
+                tracing::debug!(txs = batch.len(), "mempool batch received");
+                let txs: Vec<Transaction> = batch
+                    .into_iter()
+                    .map(|b| Transaction::new(b.into()))
+                    .collect();
                 if mempool.send(txs).await.is_err() {
                     break;
                 }
@@ -187,11 +192,12 @@ impl ValidatorNode {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let ts = commit_timestamp(&commit).max(last_ts);
                 last_ts = ts;
-                pending.extend(
-                    DagOrdering::ordered_payloads(std::slice::from_ref(&commit))
-                        .into_iter()
-                        .map(Bytes::from),
-                );
+                let payloads = DagOrdering::ordered_payloads(std::slice::from_ref(&commit));
+                // Quiet mesh, quiet logs: empty commits (the common case on
+                // an idle network — mysticeti keeps proposing) stay at
+                // debug. Anything that sealed logs at info.
+                let n_payloads = payloads.len();
+                pending.extend(payloads.into_iter().map(Bytes::from));
                 if pending.len() > MAX_PENDING_PAYLOADS {
                     let drop_n = pending.len() - MAX_PENDING_PAYLOADS;
                     pending.drain(..drop_n);
@@ -201,12 +207,16 @@ impl ValidatorNode {
                         "dropping overfull pending payloads"
                     );
                 }
+                let mut sealed: u64 = 0;
                 loop {
                     let mut progress = false;
                     let mut still_pending = Vec::new();
                     for raw in pending.drain(..) {
                         match exec_node.lock().await.seal_committed(raw.clone(), ts) {
-                            Ok(_) => progress = true,
+                            Ok(_) => {
+                                progress = true;
+                                sealed += 1;
+                            }
                             Err(e) => {
                                 tracing::debug!(
                                     validator = %validator_id,
@@ -222,6 +232,50 @@ impl ValidatorNode {
                         break;
                     }
                 }
+                // Per-commit heartbeat: head height, pending depth and the
+                // commit timestamp that sealed this batch. `seal_committed`
+                // already logs every sealed block; this line ties them to
+                // the DAG commit that carried them.
+                let head = exec_node.lock().await.block_number();
+                if n_payloads > 0 || sealed > 0 {
+                    tracing::info!(
+                        validator = %validator_id,
+                        head,
+                        txs = sealed,
+                        pending = pending.len(),
+                        ts,
+                        "executed commit"
+                    );
+                } else {
+                    tracing::debug!(
+                        validator = %validator_id,
+                        head,
+                        ts,
+                        "empty commit"
+                    );
+                }
+            }
+        });
+
+        // Liveness heartbeat while the mesh is quiet: proves at a glance
+        // that the validator is alive, caught up, and committing.
+        let beat_node = node.clone();
+        let beat_id = loaded.id.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
+            loop {
+                interval.tick().await;
+                let guard = beat_node.lock().await;
+                let (blocks, txs, commits) = guard.metrics().snapshot();
+                tracing::info!(
+                    validator = %beat_id,
+                    height = guard.block_number(),
+                    blocks_sealed = blocks,
+                    txs_sealed = txs,
+                    commits_seen = commits,
+                    "heartbeat"
+                );
             }
         });
 

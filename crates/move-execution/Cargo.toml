@@ -9,6 +9,7 @@ description = "Kanari EVM execution layer (chain spec, PQC precompiles, instant-
 
 [dependencies]
 kanari-evm-storage.workspace = true
+kanari-evm-types.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
@@ -21,3 +22,4 @@ serde_json.workspace = true
 smt.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true

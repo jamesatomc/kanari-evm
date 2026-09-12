@@ -21,7 +21,7 @@
 use crate::chainspec::KanariChainSpec;
 use crate::faucet::parse_faucet_hex_file;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
-use kanari_evm_storage::{ChainStore, SealedBlock, StoredReceipt, StoreError};
+use kanari_evm_storage::{ChainStore, SealedBlock, StoreError, StoredReceipt};
 use revm::database::InMemoryDB;
 use serde::{Deserialize, Serialize};
 use smt::SparseMerkleTree;
@@ -37,8 +37,6 @@ use tokio::sync::{Mutex, mpsc};
 
 /// Base fee charged by every sealed block (1 gwei, Anvil-style).
 pub const DEFAULT_BASE_FEE_WEI: u128 = 1_000_000_000;
-/// Genesis funding for the faucet account (whole ETH).
-pub const FAUCET_GENESIS_ETH: u128 = 1_000_000;
 /// Max drip per faucet call (whole ETH).
 pub const MAX_FAUCET_ETH_PER_REQUEST: u128 = 10_000;
 /// Wei per whole ETH.
@@ -58,7 +56,9 @@ pub const BLOCK_BENEFICIARY: Address =
 pub enum NodeError {
     #[error("invalid transaction bytes: {0}")]
     InvalidTransaction(String),
-    #[error("unsupported transaction type (only legacy, EIP-2930, EIP-1559 and EIP-7702 are accepted)")]
+    #[error(
+        "unsupported transaction type (only legacy, EIP-2930, EIP-1559 and EIP-7702 are accepted)"
+    )]
     UnsupportedTxType,
     #[error("signature recovery failed: {0}")]
     BadSignature(String),
@@ -235,7 +235,8 @@ impl KanariNode {
     /// Lock-free counters for `GET /metrics`.
     pub fn metrics(&self) -> &NodeMetrics {
         &self.metrics
-    }    /// Latest sealed block number (0 before the first transaction).
+    }
+    /// Latest sealed block number (0 before the first transaction).
     pub fn block_number(&self) -> u64 {
         self.blocks.last().map(|b| b.number).unwrap_or(0)
     }

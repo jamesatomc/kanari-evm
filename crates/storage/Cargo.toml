@@ -9,7 +9,7 @@ description = "Kanari EVM durable chain storage (RocksDB blocks, receipts, metad
 
 [dependencies]
 alloy-primitives.workspace = true
-kanari-db-common.workspace = true
+kanari-evm-types.workspace = true
 rocksdb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

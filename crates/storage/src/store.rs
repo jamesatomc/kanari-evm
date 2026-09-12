@@ -81,25 +81,15 @@ mod keys {
     pub fn receipt_key(hash: &B256) -> Vec<u8> {
         let mut key = Vec::with_capacity(2 + 64);
         key.extend_from_slice(b"r:");
-        key.extend_from_slice(hex_of(&hash.0).as_bytes());
+        key.extend_from_slice(kanari_evm_types::hex_encode(&hash.0).as_bytes());
         key
     }
 
     pub fn tx_index_key(hash: &B256) -> Vec<u8> {
         let mut key = Vec::with_capacity(2 + 64);
         key.extend_from_slice(b"t:");
-        key.extend_from_slice(hex_of(&hash.0).as_bytes());
+        key.extend_from_slice(kanari_evm_types::hex_encode(&hash.0).as_bytes());
         key
-    }
-
-    fn hex_of(bytes: &[u8]) -> String {
-        const CHARS: &[u8; 16] = b"0123456789abcdef";
-        let mut out = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            out.push(CHARS[(b >> 4) as usize] as char);
-            out.push(CHARS[(b & 0x0f) as usize] as char);
-        }
-        out
     }
 }
 
@@ -121,10 +111,9 @@ pub struct ChainStore {
 }
 
 impl ChainStore {
-    /// Open (or create) the store at `dir` via the shared Kanari opener.
+    /// Open (or create) the store at `dir` via the shared local opener.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
-        let db = kanari_db_common::open_or_get_db(Some(dir.as_ref().to_path_buf()))
-            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        let db = crate::db::open_or_get_db(dir.as_ref())?;
         Ok(Self { db })
     }
 

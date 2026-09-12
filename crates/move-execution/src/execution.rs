@@ -23,7 +23,7 @@ use revm::{
     context::TxEnv,
     context_interface::result::{ExecutionResult, Output},
     database::InMemoryDB,
-    database_interface::DatabaseCommit,
+    database_interface::{Database, DatabaseCommit},
     handler::{ExecuteEvm, MainnetContext},
     primitives::TxKind as RevmTxKind,
 };
@@ -142,6 +142,27 @@ impl KanariNode {
         Ok(())
     }
 
+    /// Credit the base-fee share of a sealed transaction to the block
+    /// beneficiary (the no-burn half of Kanari fee policy). Reads the live
+    /// account and writes it back with only the balance bumped — code hash,
+    /// nonce, storage and deployed code are untouched.
+    fn credit_beneficiary(&mut self, amount: U256) -> Result<(), NodeError> {
+        let mut info = self
+            .db
+            .basic(BLOCK_BENEFICIARY)
+            .map_err(|e| NodeError::Storage(e.to_string()))?
+            .unwrap_or_else(|| revm::state::AccountInfo {
+                balance: U256::ZERO,
+                nonce: 0,
+                code_hash: revm::primitives::KECCAK_EMPTY,
+                code: None,
+                account_id: None,
+            });
+        info.balance = info.balance.saturating_add(amount);
+        self.db.insert_account_info(BLOCK_BENEFICIARY, info);
+        Ok(())
+    }
+
     /// Decode, execute, commit to revm state, update the SMT commitment and
     /// seal a block, persisting it atomically (block + receipts + tx index
     /// + height) to RocksDB.
@@ -158,8 +179,20 @@ impl KanariNode {
             .transact(prepared.tx_env())
             .map_err(|e| NodeError::Execution(e.to_string()))?;
         self.db.commit(output.state);
-        let state_root = self.rebuild_smt()?;
         let (success, gas_used, created, logs) = execution_summary(&output.result);
+        // Kanari fee policy: NO burn. revm already credited the priority fee
+        // to the beneficiary during execution; the base-fee share
+        // (`gas_used * basefee`, destroyed by vanilla EIP-1559) is credited
+        // here instead. The sender already paid exactly this amount, so this
+        // is a pure transfer — supply is conserved, and every validator
+        // computes the identical credit from the identical receipt.
+        // Invariant: block basefee is always DEFAULT_BASE_FEE_WEI (see
+        // `evm_for_block`), so the burned share is exactly this product.
+        let burned = U256::from(gas_used).saturating_mul(U256::from(DEFAULT_BASE_FEE_WEI));
+        if !burned.is_zero() {
+            self.credit_beneficiary(burned)?;
+        }
+        let state_root = self.rebuild_smt()?;
         let hash = keccak256(&raw);
         let block_hash = block_hash(parent_hash, number, timestamp);
         let block = SealedBlock {
@@ -181,11 +214,20 @@ impl KanariNode {
             contract_address: created,
             logs,
         };
+        let n_logs = receipt.logs.len();
         self.store.save_block(&block, &[(&hash, &receipt)])?;
         self.blocks.push(block);
         self.receipts.insert(hash, receipt);
         self.metrics.blocks_sealed.fetch_add(1, Ordering::Relaxed);
         self.metrics.txs_sealed.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(
+            number,
+            tx = %hash,
+            gas_used,
+            success,
+            n_logs,
+            "sealed block"
+        );
         Ok(hash)
     }
 }

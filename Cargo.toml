@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "crates/consensus",
+    "crates/evm-types",
     "crates/kanari-node",
     "crates/move-execution",
     "crates/server_rpc",
@@ -33,7 +34,6 @@ documentation = "https://docs.kanarinetwork.site"
 # `reth-node-builder` git dependency then.
 revm = "43.0.2"
 kanari-crypto = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
-kanari-db-common = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 smt = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 # Mysticeti DAG consensus as the ordering layer (in-process cores for tests;
 # networked validators reuse the same Core/Committer types via the syncer).
@@ -64,3 +64,4 @@ kanari-evm-consensus = { path = "crates/consensus" }
 kanari-evm-move-execution = { path = "crates/move-execution" }
 kanari-evm-rpc = { path = "crates/server_rpc" }
 kanari-evm-storage = { path = "crates/storage" }
+kanari-evm-types = { path = "crates/evm-types" }

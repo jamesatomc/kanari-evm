@@ -34,7 +34,7 @@ pub use chainspec::{
 pub use execution::CallRequest;
 pub use faucet::generate_faucet_key;
 pub use node::{
-    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, FAUCET_GENESIS_ETH, KanariNode,
+    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, KanariNode,
     MAX_FAUCET_ETH_PER_REQUEST, NodeMetrics, SharedNode, WEI_IN_ETH,
 };
 pub use state::SmtProof;

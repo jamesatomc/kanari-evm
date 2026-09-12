@@ -9,16 +9,16 @@
 //! Method not found`. Block hashes are deterministic placeholders
 //! (see `node.rs`).
 
-use kanari_evm_move_execution::{
-    execution::CallRequest,
-    node::{DEFAULT_BASE_FEE_WEI, KanariNode, NodeError, SharedNode},
-    render_sealed_log,
-};
 use alloy_primitives::{Address, B256, Bytes, U256};
 use axum::{
     Json, Router,
     extract::State,
     routing::{get, post},
+};
+use kanari_evm_move_execution::{
+    execution::CallRequest,
+    node::{DEFAULT_BASE_FEE_WEI, KanariNode, NodeError, SharedNode},
+    render_sealed_log,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -70,11 +70,11 @@ fn err(id: Value, code: i64, message: String) -> RpcResponse {
 }
 
 fn quantity_u64(v: u64) -> Value {
-    json!(format!("0x{v:x}"))
+    json!(kanari_evm_types::quantity_u64(v))
 }
 
 fn quantity_u256(v: U256) -> Value {
-    json!(format!("0x{v:x}"))
+    json!(kanari_evm_types::quantity_u256(v))
 }
 
 fn parse_address(v: &Value) -> Result<Address, String> {
@@ -153,16 +153,18 @@ fn log_block_range(
 fn log_addresses(filter: &serde_json::Map<String, Value>) -> Result<Option<Vec<Address>>, String> {
     match filter.get("address") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Array(addrs)) => addrs.iter().map(parse_address).collect::<Result<Vec<_>, _>>().map(Some),
+        Some(Value::Array(addrs)) => addrs
+            .iter()
+            .map(parse_address)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
         Some(v) => parse_address(v).map(|a| Some(vec![a])),
     }
 }
 
 /// Parse the log filter's topics: positional array, each entry null
 /// (wildcard), one hash, or an array of hashes (OR semantics).
-fn log_topics(
-    filter: &serde_json::Map<String, Value>,
-) -> Result<Vec<Option<Vec<B256>>>, String> {
+fn log_topics(filter: &serde_json::Map<String, Value>) -> Result<Vec<Option<Vec<B256>>>, String> {
     let Some(topics) = filter.get("topics") else {
         return Ok(Vec::new());
     };
@@ -251,10 +253,7 @@ async fn metrics_page(State(node): State<SharedNode>) -> impl axum::response::In
         txs,
         commits
     );
-    (
-        [("Content-Type", "text/plain; version=0.0.4")],
-        body,
-    )
+    ([("Content-Type", "text/plain; version=0.0.4")], body)
 }
 
 /// Static single-file explorer UI (talks to this same origin, so no CORS
@@ -404,7 +403,7 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                 Ok(addr) => {
                     let mut node = node.lock().await;
                     match node.code_of(addr) {
-                        Ok(code) => ok(id, json!(format!("0x{}", hex::encode(&code)))),
+                        Ok(code) => ok(id, json!(kanari_evm_types::hex_prefixed(&code))),
                         Err(e) => node_error(id, e),
                     }
                 }
@@ -488,7 +487,7 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             let mut node = node.lock().await;
             match node.storage_of(addr, slot) {
                 // DATA, 32 bytes: zero-padded hex, not minimal QUANTITY.
-                Ok(v) => ok(id, json!(format!("0x{v:064x}"))),
+                Ok(v) => ok(id, json!(kanari_evm_types::bytes32_hex(v))),
                 Err(e) => node_error(id, e),
             }
         }
@@ -547,7 +546,11 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             // Topics: positional array, each null (wildcard), one 0x hash,
             // or an array of 0x hashes (OR).
             let arr = params.as_array().cloned().unwrap_or_default();
-            let filter = arr.first().and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let filter = arr
+                .first()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
             let node = node.lock().await;
             let latest = node.block_number();
             let range = match log_block_range(&filter, latest, &node) {
@@ -566,7 +569,9 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                 .logs_in_range(range.0, range.1)
                 .iter()
                 .filter(|log| {
-                    addresses.as_ref().is_none_or(|addrs| addrs.contains(&log.address))
+                    addresses
+                        .as_ref()
+                        .is_none_or(|addrs| addrs.contains(&log.address))
                         && topics_match(&topics, &log.topics)
                 })
                 .map(render_sealed_log)
@@ -626,7 +631,7 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                     if req.method.as_str() == "eth_estimateGas" {
                         ok(id, quantity_u64(out.gas_used))
                     } else {
-                        ok(id, json!(format!("0x{}", hex::encode(&out.output))))
+                        ok(id, json!(kanari_evm_types::hex_prefixed(&out.output)))
                     }
                 }
                 Err(e) => node_error(id, e),
@@ -708,7 +713,7 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                     json!({
                         "root": p.root.to_string(),
                         "key": p.key.to_string(),
-                        "value": p.value.map(|v| format!("0x{}", hex::encode(&v))),
+                        "value": p.value.map(|v| kanari_evm_types::hex_prefixed(&v)),
                         "exists": p.exists,
                         "leaf": p.leaf.to_string(),
                         "proof": p.siblings.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
@@ -718,19 +723,5 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
             }
         }
         other => err(id, -32601, format!("Method not found: {other}")),
-    }
-}
-
-/// Hex-encode helper (avoids pulling another hex dependency).
-mod hex {
-    const CHARS: &[u8; 16] = b"0123456789abcdef";
-
-    pub fn encode(bytes: &[u8]) -> String {
-        let mut out = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            out.push(CHARS[(b >> 4) as usize] as char);
-            out.push(CHARS[(b & 0x0f) as usize] as char);
-        }
-        out
     }
 }

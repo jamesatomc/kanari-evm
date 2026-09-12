@@ -101,8 +101,14 @@ Checklist per host:
 
 - `testnet`/`mainnet` have no EVM chain spec yet — `start` fails fast
   outside `devnet` instead of running dev parameters silently.
+- Genesis holds the FULL supply at the dev account (`0xC88C…`); the faucet
+  gets nothing — fund it with a transfer from the dev account first.
 - `--faucet 0xAddr [eth]` funds extra genesis accounts (fresh state only).
 - `--faucet-key <32-byte-hex>` pins the faucet to your own dev key.
 - Dev faucet RPC: `kanari_faucet(["0xAddr","5"])` — dev only, no auth.
+- Fees: no burn — beneficiary (`0x7985…`) takes base + priority per tx.
+- `--log-level debug` for RPC traffic; Ctrl+C drains cleanly.
+- Validator TOML: `kanari-evm-node validator --config node1.toml`
+  (see `ValidatorFileConfig` docs in `crates/kanari-node/src/main.rs`).
 - Live deploy test: `KANARI_EVM_LIVE_RPC=http://127.0.0.1:8545 cargo test
   -p kanari-evm-node --test contracts live_`.

@@ -9,6 +9,7 @@ description = "Kanari EVM Ethereum JSON-RPC server plus bundled explorer UI."
 
 [dependencies]
 kanari-evm-move-execution.workspace = true
+kanari-evm-types.workspace = true
 alloy-primitives.workspace = true
 axum.workspace = true
 serde.workspace = true

@@ -108,14 +108,29 @@ for ($i = 1; $i -le $NodeCount; $i++) {
     $rpcPort = $dagPort + 1
     $dataDir = Join-Path $DataRoot "node$i"
     $keyFile = Join-Path $KeysDir "validator-$i.key"
+    # Per-validator TOML (the --config path); CLI flags still win if added.
+    # NOTE: TOML basic strings treat `\` as escape, so paths use `/`.
+    $committeeToml = $committee -replace '\\', '/'
+    $keyToml = $keyFile -replace '\\', '/'
+    $dataToml = $dataDir -replace '\\', '/'
+    $toml = @"
+committee = "$committeeToml"
+key = "$keyToml"
+data_dir = "$dataToml"
+rpc_host = "$ListenHost"
+rpc_port = $rpcPort
+log_level = "info"
+"@
+    if ($FaucetKey -ne "") {
+        $toml += "`nfaucet_key = `"$FaucetKey`""
+    }
+    $configFile = Join-Path $dataDir "validator.toml"
+    New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+    Set-Content -Path $configFile -Value $toml -Encoding utf8
     Write-Host "Starting validator $i (DAG $dagPort / RPC $rpcPort / $dataDir) ..."
     # NOTE: never name this $args — that is a PowerShell automatic variable
     # and the assignment would not reach Start-Process.
-    $cmdLine = "& '$nodeExe' validator --committee '$committee' --key '$keyFile' " +
-        "--data-dir '$dataDir' --rpc-port $rpcPort --rpc-host $ListenHost"
-    if ($FaucetKey -ne "") {
-        $cmdLine += " --faucet-key $FaucetKey"
-    }
+    $cmdLine = "& '$nodeExe' validator --config '$configFile'"
     Start-Process $shell -ArgumentList @("-NoExit", "-Command", $cmdLine)
 }
 

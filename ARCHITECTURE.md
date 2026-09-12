@@ -12,8 +12,7 @@ is no fork history to replay.
 
 ```text
 crates/
-├── move-execution/  — EVM execution layer (lib: kanari-evm-move-execution)
-│   ├── chainspec.rs  — chain spec + genesis allocations
+├── move-execution/  — EVM execution layer (lib: kanari-evm-move-execution)│   ├── chainspec.rs  — chain spec + genesis allocations
 │   ├── precompiles.rs— Falcon-512 / Dilithium3 verify precompiles
 │   ├── contracts.rs  — hand-assembled demo contracts (no solc)
 │   ├── node.rs       — lifecycle, persistence glue, chain accessors
@@ -35,8 +34,12 @@ crates/
     └── tests/        — wallet flow, contracts, PQC, DAG, SMT proofs, multinode
 ```
 
+Plus `crates/evm-types` (lib: `kanari-evm-types`) — leaf shared
+primitives (hex + QUANTITY formatting) that every crate imports; the only
+allowed dependency direction into it keeps the graph acyclic.
+
 Dependencies flow one way (no cycles):
-`storage` ← `move-execution` ← {`consensus`, `server_rpc`} ← `kanari-node`.
+`evm-types` ← `storage` ← `move-execution` ← {`consensus`, `server_rpc`} ← `kanari-node`.
 `SealedBlock`/`StoredReceipt` live in `storage`; `SharedNode` lives in
 `move-execution::node` and is re-exported by `server_rpc`.
 
@@ -51,8 +54,14 @@ the sparse Merkle tree commitment after every transition; `views.rs`
 renders RPC shapes; `faucet.rs` holds the dev drip account.
 
 Chain parameters: chain id `19088`, 1 gwei base fee (Anvil-style),
-30M block gas limit, priority fees to the treasury beneficiary
-(`0x7985…ccA`), base fee burned per EIP-1559.
+30M block gas limit. **Kanari fee policy — no burn**: the block beneficiary
+(`0x7985…ccA`) receives the FULL fee (base + priority) of every
+transaction. revm credits the priority share during execution; the base
+share (`gas_used × basefee`, destroyed by vanilla EIP-1559) is credited to
+the beneficiary at seal time instead. The sender already paid exactly that
+amount, so supply is conserved and every validator computes the identical
+credit. Genesis holds the full 11M supply at the dev account (`0xC88C…`);
+the faucet gets no genesis allocation and must be funded by transfer.
 
 Post-quantum precompiles (`precompiles.rs`, à la EIP-8052/8053):
 
@@ -102,10 +111,15 @@ arrays are accepted (wallets batch on load). Method coverage:
 | `eth_getTransactionByHash`, `eth_getTransactionReceipt` | sealed data, `null` when unknown |
 | `eth_getBlockByNumber`, `eth_getBlockByHash` | incl. synthetic empty genesis (block 0) |
 | `eth_call`, `eth_estimateGas` | read-only, never seals |
-| `eth_getLogs` | always `[]` — receipts carry no logs; keeps dApps loading |
+| `eth_getLogs` | real address/topic/block-range filtering over sealed receipts |
 | `kanari_faucet` | dev drip, no auth |
 | `kanari_supply` | genesis-sum circulating + 11M protocol cap |
 | `kanari_getSmtProof` | account / storage-slot inclusion proofs |
+| `GET /metrics` | Prometheus counters: head block, seals, txs, DAG commits |
+
+Supported transaction types: legacy (protected), EIP-2930, EIP-1559 and
+EIP-7702 (self-sponsored nonces follow revm's validate-then-apply order:
+tx.nonce is pre-state, auth.nonce post-caller-bump). EIP-4844 is rejected.
 
 Anything else returns `-32601 Method not found`. Block hashes are
 deterministic `keccak256(parent || number || timestamp)` placeholders —
@@ -140,8 +154,9 @@ kanari-evm-node validator --committee ./dag-keys/dag-committee.json `
   commit sequence is identical.
 - **Genesis discipline**: all validators must start from byte-identical
   genesis or state roots diverge from block 0. Validator mode therefore
-  never auto-creates a faucet; pass the SAME `--faucet-key` to every
-  validator (or none) for a shared faucet account.
+   never auto-creates a faucet; pass the SAME `--faucet-key` to every
+   validator (or none) for a shared faucet account — then fund that
+   account with a transfer from the dev account before dripping.
 
 ## Invariants (do not break)
 
@@ -162,10 +177,26 @@ kanari-evm-node validator --committee ./dag-keys/dag-committee.json `
 ## Verification
 
 ```powershell
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 CI (`.github/workflows/ci.yml`) runs both on `windows-latest` and
 `ubuntu-latest`. Integration tests bind ephemeral ports (`127.0.0.1:0`),
 so they are parallel-safe.
+
+## Operability
+
+- `--log-level trace|debug|info|warn|error` (all serve modes) drives
+  `tracing` output; RPC traffic logs at `debug`, validator commit activity
+  at `info`/`debug`, banners always print.
+- Live activity: every sealed block logs `number/tx/gas_used/success`
+  (both modes), every DAG commit logs its head height + pending depth, and
+  a `heartbeat` line (height, seals, commits) prints every 10s while the
+  mesh is quiet — validators are never silent anymore. `GET /metrics`
+  exposes the same counters for scrapers.
+- Ctrl+C (or SIGTERM) drains in-flight RPC calls, stops the DAG syncer,
+  then exits. Sealed EVM state replays from the chain store; uncommitted
+  DAG rounds resume from the WAL.
+- Validators take `--config node.toml` (TOML, CLI flags override file
+  values); `start-validators.ps1` writes one per validator automatically.

@@ -8,8 +8,9 @@
 //! against a real node over JSON-RPC when `KANARI_EVM_LIVE_RPC` is set
 //! (e.g. a local dev node with the faucet enabled).
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
+use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
@@ -62,6 +63,20 @@ fn word_to_u64(word: &[u8]) -> u64 {
     let mut b = [0u8; 8];
     b.copy_from_slice(&word[24..]);
     u64::from_be_bytes(b)
+}
+
+/// Normalize an ECDSA signature to canonical low-s form for EIP-7702
+/// authorizations (revm drops high-s auths at recovery).
+fn canonical_auth(auth: Authorization, sig: alloy_primitives::Signature) -> SignedAuthorization {
+    /// secp256k1 group order.
+    const N: &str = "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141";
+    let order = U256::from_str_radix(N, 16).expect("order");
+    let (s, parity) = if sig.s() > order >> 1 {
+        (order - sig.s(), !sig.v())
+    } else {
+        (sig.s(), sig.v())
+    };
+    SignedAuthorization::new_unchecked(auth, parity as u8, sig.r(), s)
 }
 
 #[tokio::test]
@@ -123,6 +138,101 @@ async fn simple_storage_lifecycle() {
     let r1 = read(&mut node);
     assert!(r1.success);
     assert_eq!(word_to_u64(&r1.output), 12345);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// EIP-7702 set-code transactions: a real signed authorization delegates
+/// the sender's account to SimpleStorage, then calling the sender runs
+/// `set()` inside the delegation. The tx view reports type 4.
+#[tokio::test]
+async fn eip7702_delegates_and_executes() {
+    let sender = PrivateKeySigner::random();
+    let sender_addr = sender.address();
+    let spec = KanariChainSpec::with_alloc(
+        KANARI_EVM_DEV_CHAIN_ID,
+        KANARI_EVM_GENESIS_SPEC,
+        vec![(sender_addr, U256::from(DEV_FUNDED_BALANCE))],
+    );
+    let dir = std::env::temp_dir().join(format!("kanari-evm-7702-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
+
+    // Deploy the delegation target with a plain legacy-style tx (nonce 0).
+    let init = contracts::deploy_init(contracts::SIMPLE_STORAGE_RUNTIME);
+    let deploy_hash = node
+        .send_raw_transaction(sign_1559(&sender, create_tx(0, init)).await)
+        .expect("deploy seals");
+    let target = node
+        .receipt(&deploy_hash)
+        .expect("receipt")
+        .contract_address
+        .expect("created");
+
+    // Nonce choreography for SELF-sponsored 7702 in revm's phase order:
+    // validate+deduce bumps the caller (1->2) BEFORE the auth list is
+    // applied, so the tx runs at the pre-state nonce (1) while the auth
+    // must carry the post-bump nonce (2). (Third-party authorities use
+    // their plain state nonce — only the caller bump shifts this.)
+    let auth = Authorization {
+        chain_id: U256::from(KANARI_EVM_DEV_CHAIN_ID),
+        address: target,
+        nonce: 2,
+    };
+    let auth_sig = sender
+        .sign_hash(&auth.signature_hash())
+        .await
+        .expect("sign auth");
+    // revm drops authorizations whose `s` exceeds the curve half-order,
+    // and k256 signing is not canonical — normalize (wallets always send
+    // low-s). Production path needs no handling.
+    let signed_auth = canonical_auth(auth, auth_sig);
+    let tx = TxEip7702 {
+        chain_id: KANARI_EVM_DEV_CHAIN_ID,
+        nonce: 1,
+        gas_limit: 500_000,
+        max_fee_per_gas: GWEI_WEI,
+        max_priority_fee_per_gas: GWEI_WEI,
+        to: sender_addr,
+        value: U256::ZERO,
+        input: contracts::encode_set(777).into(),
+        access_list: Default::default(),
+        authorization_list: vec![signed_auth],
+    };
+    let sig = sender
+        .sign_hash(&tx.signature_hash())
+        .await
+        .expect("sign tx");
+    let envelope = TxEnvelope::from(tx.into_signed(sig));
+    let mut raw = Vec::new();
+    envelope.encode_2718(&mut raw);
+    let hash = node.send_raw_transaction(raw.into()).expect("7702 seals");
+    let receipt = node.receipt(&hash).expect("receipt");
+    assert!(receipt.success, "7702 delegated call must succeed");
+    let view = node.tx_view(&hash).expect("tx view");
+    assert_eq!(view["type"], serde_json::json!("0x4"));
+
+    // The sender account now carries the delegation designation...
+    let code = node.code_of(sender_addr).expect("code");
+    assert_eq!(
+        &code[..3],
+        &[0xef, 0x01, 0x00],
+        "0xef0100 delegation marker"
+    );
+    assert_eq!(&code[3..], target.as_slice(), "delegates to target");
+    // ...and set(777) ran in the sender's own storage.
+    let out = node
+        .call(CallRequest {
+            from: Some(sender_addr),
+            to: Some(sender_addr),
+            data: Some(contracts::encode_get().into()),
+            gas: Some(100_000),
+            ..Default::default()
+        })
+        .expect("call");
+    assert!(out.success);
+    assert_eq!(word_to_u64(&out.output), 777);
 
     std::fs::remove_dir_all(&dir).ok();
 }

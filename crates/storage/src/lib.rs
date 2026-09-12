@@ -6,6 +6,7 @@
 //! (`SealedBlock`, `StoredReceipt`, `StoredLog`) shared with the execution
 //! layer. See `store.rs` for the key layout.
 
+pub mod db;
 pub mod store;
 
 pub use store::{ChainStore, SealedBlock, StoreError, StoredLog, StoredReceipt};

@@ -10,6 +10,7 @@ description = "Kanari EVM consensus (Mysticeti DAG ordering, committee files, ne
 [dependencies]
 kanari-evm-move-execution.workspace = true
 kanari-evm-storage.workspace = true
+kanari-evm-types.workspace = true
 alloy-primitives.workspace = true
 consensus.workspace = true
 dag.workspace = true

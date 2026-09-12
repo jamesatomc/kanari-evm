@@ -104,16 +104,7 @@ fn signer_address(signer: &PrivateKeySigner) -> Address {
 /// Parse a legacy faucet sidecar file (64-char hex, `0x` prefix tolerated).
 pub(crate) fn parse_faucet_hex_file(path: &Path) -> Result<B256, NodeError> {
     let raw = std::fs::read_to_string(path).map_err(|e| NodeError::Storage(e.to_string()))?;
-    let hex = raw.trim().trim_start_matches("0x");
-    if hex.len() != 64 {
-        return Err(NodeError::Storage("malformed faucet key file".to_string()));
-    }
-    let mut bytes = [0u8; 32];
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk)
-            .map_err(|_| NodeError::Storage("malformed faucet key file".to_string()))?;
-        bytes[i] = u8::from_str_radix(s, 16)
-            .map_err(|_| NodeError::Storage("malformed faucet key file".to_string()))?;
-    }
+    let bytes =
+        kanari_evm_types::hex_decode32(&raw).map_err(|_| NodeError::Storage("malformed faucet key file".to_string()))?;
     Ok(B256::from_slice(&bytes))
 }

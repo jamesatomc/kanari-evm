@@ -3320,6 +3320,7 @@ dependencies = [
  "dag",
  "kanari-evm-move-execution",
  "kanari-evm-storage",
+ "kanari-evm-types",
  "rand 0.10.2",
  "serde",
  "serde_json",
@@ -3339,12 +3340,14 @@ dependencies = [
  "alloy-signer-local",
  "kanari-crypto",
  "kanari-evm-storage",
+ "kanari-evm-types",
  "revm",
  "serde",
  "serde_json",
  "smt",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3380,6 +3383,7 @@ dependencies = [
  "alloy-primitives",
  "axum",
  "kanari-evm-move-execution",
+ "kanari-evm-types",
  "serde",
  "serde_json",
  "tokio",
@@ -3391,10 +3395,18 @@ name = "kanari-evm-storage"
 version = "0.0.1"
 dependencies = [
  "alloy-primitives",
- "kanari-db-common",
+ "kanari-evm-types",
  "rocksdb",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "kanari-evm-types"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
  "thiserror 2.0.20",
 ]
 

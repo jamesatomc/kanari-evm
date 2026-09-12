@@ -325,14 +325,15 @@ async fn block_priority_fees_accrue_to_beneficiary() {
     let gas_used = receipt.gas_used;
     let _ = receipt;
 
-    // Treasury earned exactly gas_used x priority fee; the base fee burned.
+    // Treasury earned the FULL fee: gas_used x (priority + base). Kanari
+    // has no burn — the base-fee share is redirected to the beneficiary.
     let got = node
         .balance_of(kanari_evm_move_execution::BLOCK_BENEFICIARY)
         .expect("treasury balance");
     assert_eq!(
         got,
-        U256::from(gas_used) * U256::from(GWEI_WEI),
-        "beneficiary must receive the full priority fee"
+        U256::from(gas_used) * U256::from(2 * GWEI_WEI),
+        "beneficiary must receive priority fee plus redirected base fee"
     );
 
     std::fs::remove_dir_all(&dir).ok();
@@ -370,7 +371,11 @@ async fn dev_node_serves_logs_and_storage_slots() {
         &client,
         &url,
         "eth_getStorageAt",
-        json!([kanari_evm_move_execution::DEV_FUNDED_ACCOUNT.to_string(), "0x0", "latest"]),
+        json!([
+            kanari_evm_move_execution::DEV_FUNDED_ACCOUNT.to_string(),
+            "0x0",
+            "latest"
+        ]),
     )
     .await;
     assert_eq!(

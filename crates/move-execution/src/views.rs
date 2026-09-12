@@ -10,10 +10,13 @@
 //! mistaken for full L1 validity proofs.
 
 use crate::node::{BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_BASE_FEE_WEI, KanariNode};
-use kanari_evm_storage::{SealedBlock, StoredLog, StoredReceipt};
 use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256, keccak256};
+use kanari_evm_storage::{SealedBlock, StoredLog, StoredReceipt};
+use kanari_evm_types::{
+    hex_prefixed as bytes_hex, quantity_u64 as quantity, quantity_u256,
+};
 
 impl KanariNode {
     /// Standard `eth_getTransactionByHash` view (v/r/s omitted).
@@ -173,10 +176,6 @@ impl KanariNode {
     }
 }
 
-fn quantity(v: u64) -> String {
-    format!("0x{v:x}")
-}
-
 /// One sealed log with its chain position, as `eth_getLogs` returns it.
 /// `transactionIndex` is always `0x0`: every sealed block holds exactly one
 /// transaction on this chain.
@@ -224,21 +223,6 @@ pub fn render_sealed_log(log: &SealedLog) -> serde_json::Value {
         "data": bytes_hex(&log.data),
         "topics": log.topics.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
     })
-}
-
-fn quantity_u256(v: U256) -> String {
-    format!("0x{v:x}")
-}
-
-fn bytes_hex(b: &[u8]) -> String {
-    let mut out = String::with_capacity(2 + b.len() * 2);
-    out.push_str("0x");
-    const CHARS: &[u8; 16] = b"0123456789abcdef";
-    for byte in b.iter() {
-        out.push(CHARS[(byte >> 4) as usize] as char);
-        out.push(CHARS[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 /// Decoded transaction fields for JSON views (used by tx/receipt views).

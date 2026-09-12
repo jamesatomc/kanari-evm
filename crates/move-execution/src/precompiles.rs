@@ -271,24 +271,18 @@ fn split_u16_prefix(input: &[u8]) -> Option<(usize, &[u8])> {
     Some((len, &input[2..]))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const CHARS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(CHARS[(b >> 4) as usize] as char);
-        out.push(CHARS[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
 fn verify_falcon512_bytes(pubkey: &[u8], msg: &[u8], sig: &[u8]) -> bool {
-    kanari_crypto::signatures::falcon::verify_signature_falcon512(&hex_encode(pubkey), msg, sig)
-        .unwrap_or(false)
+    kanari_crypto::signatures::falcon::verify_signature_falcon512(
+        &kanari_evm_types::hex_encode(pubkey),
+        msg,
+        sig,
+    )
+    .unwrap_or(false)
 }
 
 fn verify_dilithium3_bytes(pubkey: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     kanari_crypto::signatures::dilithium3::verify_signature_dilithium3(
-        &hex_encode(pubkey),
+        &kanari_evm_types::hex_encode(pubkey),
         msg,
         sig,
     )
