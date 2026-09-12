@@ -35,8 +35,10 @@ crates/
 ```
 
 Plus `crates/evm-types` (lib: `kanari-evm-types`) — leaf shared
-primitives (hex + QUANTITY formatting) that every crate imports; the only
-allowed dependency direction into it keeps the graph acyclic.
+primitives (hex + QUANTITY formatting, gas economics) that every crate
+imports; the only allowed dependency direction into it keeps the graph
+acyclic. Integration tests share signing/RPC/temp-dir helpers through
+`crates/kanari-node/tests/common/` instead of copying them per file.
 
 Dependencies flow one way (no cycles):
 `evm-types` ← `storage` ← `move-execution` ← {`consensus`, `server_rpc`} ← `kanari-node`.

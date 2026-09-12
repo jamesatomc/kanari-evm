@@ -27,7 +27,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use kanari_evm_consensus::{ValidatorNode, ValidatorOpts};
 use kanari_evm_move_execution::{
     DEV_FUNDED_ACCOUNT, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
-    KanariChainSpec, KanariNode, MAX_FAUCET_ETH_PER_REQUEST, generate_faucet_key,
+    KanariChainSpec, KanariNode, MAX_FAUCET_ETH_PER_REQUEST, generate_faucet_key, node::SharedNode,
 };
 use kanari_evm_rpc::rpc;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
@@ -482,12 +482,19 @@ async fn run(opts: StartOptions) {
         state_file.display()
     );
 
-    let app = rpc::router(Arc::new(Mutex::new(node)));
-    let bind: std::net::IpAddr = opts
-        .rpc_host
+    let shared = Arc::new(Mutex::new(node));
+    serve_rpc(shared, &opts.rpc_host, opts.rpc_port).await;
+    tracing::info!("node stopped cleanly");
+}
+
+/// Bind, serve the JSON-RPC router, and drain gracefully on Ctrl+C/SIGTERM.
+/// Shared by single-node and validator modes.
+async fn serve_rpc(shared: SharedNode, rpc_host: &str, rpc_port: u16) {
+    let app = rpc::router(shared);
+    let bind: std::net::IpAddr = rpc_host
         .parse()
         .unwrap_or_else(|_| fatal("--rpc-host needs an IP address"));
-    let addr = SocketAddr::new(bind, opts.rpc_port);
+    let addr = SocketAddr::new(bind, rpc_port);
     println!("JSON-RPC listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -496,7 +503,6 @@ async fn run(opts: StartOptions) {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
-    tracing::info!("node stopped cleanly");
 }
 
 fn cmd_reset(data_dir: Option<std::path::PathBuf>, force: bool) {
@@ -645,19 +651,7 @@ async fn run_validator(
     println!("========================================");
     println!();
 
-    let app = rpc::router(shared);
-    let bind: std::net::IpAddr = rpc_host
-        .parse()
-        .unwrap_or_else(|_| fatal("--rpc-host needs an IP address"));
-    let addr = SocketAddr::new(bind, rpc_port);
-    println!("JSON-RPC listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .unwrap_or_else(|e| fatal(&format!("failed to bind {addr}: {e}")));
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
+    serve_rpc(shared, &rpc_host, rpc_port).await;
     validator.shutdown().await;
     tracing::info!("validator stopped cleanly");
 }

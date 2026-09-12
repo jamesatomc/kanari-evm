@@ -5,17 +5,16 @@
 //! prove storage/account inclusion against the sealed block's state root
 //! using `smt::verify_proof` (independent verifier path).
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_eips::eip2718::Encodable2718;
+mod common;
+
+use alloy_consensus::TxEip1559;
 use alloy_primitives::{Bytes, TxKind, U256};
-use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
+use common::{GWEI_WEI, sign_tx};
 use kanari_evm_move_execution::{
     CallRequest, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
     KanariChainSpec, KanariNode,
 };
-
-const GWEI_WEI: u128 = 1_000_000_000;
 
 /// Init code: `PUSH1 0x2a, PUSH1 0x00, SSTORE, PUSH1 0x00, PUSH1 0x00, RETURN`
 /// Stores 0x2a at slot 0, returns empty runtime code.
@@ -68,15 +67,6 @@ fn base_tx() -> TxEip1559 {
     }
 }
 
-async fn sign_1559(signer: &PrivateKeySigner, tx: TxEip1559) -> Bytes {
-    let hash = tx.signature_hash();
-    let sig = signer.sign_hash(&hash).await.expect("sign");
-    let envelope = TxEnvelope::from(tx.into_signed(sig));
-    let mut raw = Vec::new();
-    envelope.encode_2718(&mut raw);
-    raw.into()
-}
-
 #[tokio::test]
 async fn deploy_proves_storage_and_account_inclusion() {
     let deployer = PrivateKeySigner::random();
@@ -86,12 +76,10 @@ async fn deploy_proves_storage_and_account_inclusion() {
         KANARI_EVM_GENESIS_SPEC,
         vec![(deployer_addr, U256::from(DEV_FUNDED_BALANCE))],
     );
-    let dir = std::env::temp_dir().join(format!("kanari-evm-smt-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("smt");
 
     let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
-    let raw = sign_1559(&deployer, base_tx()).await;
+    let raw = sign_tx(&deployer, base_tx()).await;
     let tx_hash = node.send_raw_transaction(raw).expect("deploy seals");
 
     let receipt = node.receipt(&tx_hash).expect("receipt");
@@ -200,14 +188,12 @@ async fn deploy_callable_contract_returns_value() {
         KANARI_EVM_GENESIS_SPEC,
         vec![(deployer_addr, U256::from(DEV_FUNDED_BALANCE))],
     );
-    let dir = std::env::temp_dir().join(format!("kanari-evm-call-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("call");
 
     let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
     let mut tx = base_tx();
     tx.input = Bytes::copy_from_slice(RETURN42_INIT);
-    let raw = sign_1559(&deployer, tx).await;
+    let raw = sign_tx(&deployer, tx).await;
     let tx_hash = node.send_raw_transaction(raw).expect("deploy seals");
 
     let receipt = node.receipt(&tx_hash).expect("receipt");

@@ -8,27 +8,19 @@
 //! against a real node over JSON-RPC when `KANARI_EVM_LIVE_RPC` is set
 //! (e.g. a local dev node with the faucet enabled).
 
+mod common;
+
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U256};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
+use common::{GWEI_WEI, sign_tx};
 use kanari_evm_move_execution::{
     CallRequest, DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC,
     KanariChainSpec, KanariNode, contracts,
 };
-
-const GWEI_WEI: u128 = 1_000_000_000;
-
-async fn sign_1559(signer: &PrivateKeySigner, tx: TxEip1559) -> Bytes {
-    let hash = tx.signature_hash();
-    let sig = signer.sign_hash(&hash).await.expect("sign");
-    let envelope = TxEnvelope::from(tx.into_signed(sig));
-    let mut raw = Vec::new();
-    envelope.encode_2718(&mut raw);
-    raw.into()
-}
 
 fn create_tx(nonce: u64, init: Vec<u8>) -> TxEip1559 {
     TxEip1559 {
@@ -96,7 +88,7 @@ async fn simple_storage_lifecycle() {
     // Deploy.
     let init = contracts::deploy_init(contracts::SIMPLE_STORAGE_RUNTIME);
     let deploy_hash = node
-        .send_raw_transaction(sign_1559(&deployer, create_tx(0, init)).await)
+        .send_raw_transaction(sign_tx(&deployer, create_tx(0, init)).await)
         .expect("deploy seals");
     let receipt = node.receipt(&deploy_hash).expect("receipt");
     assert!(receipt.success, "deploy must succeed");
@@ -124,7 +116,7 @@ async fn simple_storage_lifecycle() {
     // State-changing set(12345) as a signed transaction.
     let set_hash = node
         .send_raw_transaction(
-            sign_1559(
+            sign_tx(
                 &deployer,
                 call_tx(1, contract, contracts::encode_set(12345)),
             )
@@ -162,7 +154,7 @@ async fn eip7702_delegates_and_executes() {
     // Deploy the delegation target with a plain legacy-style tx (nonce 0).
     let init = contracts::deploy_init(contracts::SIMPLE_STORAGE_RUNTIME);
     let deploy_hash = node
-        .send_raw_transaction(sign_1559(&sender, create_tx(0, init)).await)
+        .send_raw_transaction(sign_tx(&sender, create_tx(0, init)).await)
         .expect("deploy seals");
     let target = node
         .receipt(&deploy_hash)
@@ -318,7 +310,7 @@ async fn live_deploy_simple_storage() {
 
     // Deploy.
     let init = contracts::deploy_init(contracts::SIMPLE_STORAGE_RUNTIME);
-    let deploy_raw = sign_1559(&signer, create_tx(nonce, init)).await;
+    let deploy_raw = sign_tx(&signer, create_tx(nonce, init)).await;
     let deploy_hash = rpc_call(
         &http,
         &rpc,
@@ -349,7 +341,7 @@ async fn live_deploy_simple_storage() {
     println!("contract: {contract}");
 
     // set(12345) as a signed on-chain transaction.
-    let set_raw = sign_1559(
+    let set_raw = sign_tx(
         &signer,
         call_tx(
             nonce + 1,

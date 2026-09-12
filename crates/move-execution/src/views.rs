@@ -13,7 +13,7 @@ use crate::node::{BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, KanariNode};
 use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256, keccak256};
-use kanari_evm_storage::{SealedBlock, StoredLog, StoredReceipt};
+use kanari_evm_storage::SealedBlock;
 use kanari_evm_types::{hex_prefixed as bytes_hex, quantity_u64 as quantity, quantity_u256};
 
 impl KanariNode {
@@ -61,7 +61,18 @@ impl KanariNode {
             .logs
             .iter()
             .enumerate()
-            .map(|(i, log)| render_log(r, 0, i as u64, log))
+            .map(|(i, log)| {
+                // transactionIndex is always 0x0: one tx per block.
+                render_sealed_log(&SealedLog {
+                    block_number: r.block_number,
+                    block_hash: r.block_hash,
+                    tx_hash: r.tx_hash,
+                    log_index: i as u64,
+                    address: log.address,
+                    topics: log.topics.clone(),
+                    data: log.data.clone(),
+                })
+            })
             .collect();
         Some(serde_json::json!({
             "transactionHash": r.tx_hash.to_string(),
@@ -203,26 +214,6 @@ pub struct SealedLog {
     pub address: Address,
     pub topics: Vec<B256>,
     pub data: Bytes,
-}
-
-/// Render one receipt log (`transactionIndex` is `0x0`, see [`SealedLog`]).
-fn render_log(
-    receipt: &StoredReceipt,
-    transaction_index: u64,
-    log_index: u64,
-    log: &StoredLog,
-) -> serde_json::Value {
-    serde_json::json!({
-        "removed": false,
-        "logIndex": quantity(log_index),
-        "transactionIndex": quantity(transaction_index),
-        "transactionHash": receipt.tx_hash.to_string(),
-        "blockNumber": quantity(receipt.block_number),
-        "blockHash": receipt.block_hash.to_string(),
-        "address": log.address.to_string(),
-        "data": bytes_hex(&log.data),
-        "topics": log.topics.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-    })
 }
 
 /// Render a ranged log for `eth_getLogs` responses.

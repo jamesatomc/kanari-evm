@@ -5,15 +5,14 @@
 //! RocksDB once (chain + alloc + faucet sidecar), then renamed aside so it
 //! is never migrated twice.
 
+mod common;
+
 use kanari_evm_move_execution::{
     KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, KanariChainSpec, KanariNode,
 };
 
 fn temp_base(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("kanari-evm-mig-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir.join("state.json")
+    common::temp_dir(&format!("mig-{tag}")).join("state.json")
 }
 
 #[test]

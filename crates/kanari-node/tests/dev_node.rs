@@ -5,46 +5,19 @@
 //! would (balance checks, signed transfer, receipt), then reopen the same
 //! state file and verify persistence via replay.
 
+mod common;
+
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Bytes, TxKind, U256, address};
 use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
+use common::{GWEI_WEI, ONE_ETH_WEI, quantity_u128 as quantity_hex, rpc, serve};
 use kanari_evm_move_execution::{
     DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, KanariChainSpec,
     KanariNode,
 };
-use kanari_evm_rpc::rpc;
 use serde_json::{Value, json};
-use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::Mutex;
-
-const ONE_ETH_WEI: u128 = 1_000_000_000_000_000_000;
-const GWEI_WEI: u128 = 1_000_000_000;
-
-async fn rpc(client: &reqwest::Client, url: &str, method: &str, params: Value) -> Value {
-    let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-    let resp: Value = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await
-        .expect("rpc reachable")
-        .json()
-        .await
-        .expect("valid json");
-    assert!(
-        resp.get("error").is_none(),
-        "rpc {method} errored: {}",
-        resp["error"]
-    );
-    resp["result"].clone()
-}
-
-fn quantity_hex(v: &Value) -> u128 {
-    let s = v.as_str().expect("0x quantity");
-    u128::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex quantity")
-}
 
 #[tokio::test]
 async fn dev_node_serves_wallet_flow_and_persists() {
@@ -59,19 +32,11 @@ async fn dev_node_serves_wallet_flow_and_persists() {
         vec![(funder_addr, U256::from(DEV_FUNDED_BALANCE))],
     );
 
-    let dir = std::env::temp_dir().join(format!("kanari-evm-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("test");
     let state_file = dir.join("state.json");
 
     let node = KanariNode::open(spec.clone(), &state_file).expect("open node");
-    let app = rpc::router(Arc::new(Mutex::new(node)));
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
-    let url = format!("http://{}/", listener.local_addr().expect("addr"));
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve");
-    });
+    let (url, server) = serve(node).await;
 
     let client = reqwest::Client::new();
 
@@ -173,18 +138,9 @@ async fn dev_node_serves_wallet_flow_and_persists() {
 
 #[tokio::test]
 async fn dev_node_serves_explorer_page() {
-    let dir = std::env::temp_dir().join(format!("kanari-evm-explorer-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("explorer");
     let node = KanariNode::open(KanariChainSpec::devnet(), dir.join("state.json")).expect("open");
-    let app = rpc::router(Arc::new(Mutex::new(node)));
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
-    let url = format!("http://{}/", listener.local_addr().expect("addr"));
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve");
-    });
+    let (url, server) = serve(node).await;
     let client = reqwest::Client::new();
     let html = client
         .get(&url)
@@ -227,20 +183,11 @@ async fn dev_node_serves_explorer_page() {
 async fn dev_node_answers_batch_requests_like_wallets_send() {
     // Wallets batch `eth_chainId` + `eth_blockNumber` + `eth_getBalance` on
     // load; a node that 422s batches shows 0 balances.
-    let dir = std::env::temp_dir().join(format!("kanari-evm-batch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("batch");
     let state_file = dir.join("state.json");
 
     let node = KanariNode::open(KanariChainSpec::devnet(), &state_file).expect("open");
-    let app = rpc::router(Arc::new(Mutex::new(node)));
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
-    let url = format!("http://{}/", listener.local_addr().expect("addr"));
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve");
-    });
+    let (url, server) = serve(node).await;
     let client = reqwest::Client::new();
 
     let batch = json!([
@@ -287,9 +234,7 @@ async fn block_priority_fees_accrue_to_beneficiary() {
         KANARI_EVM_GENESIS_SPEC,
         vec![(funder_addr, U256::from(DEV_FUNDED_BALANCE))],
     );
-    let dir = std::env::temp_dir().join(format!("kanari-evm-fees-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("fees");
     let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
 
     assert_eq!(
@@ -344,18 +289,9 @@ async fn block_priority_fees_accrue_to_beneficiary() {
 // revm state as 32-byte zero-padded hex.
 #[tokio::test]
 async fn dev_node_serves_logs_and_storage_slots() {
-    let dir = std::env::temp_dir().join(format!("kanari-evm-logs-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = common::temp_dir("logs");
     let node = KanariNode::open(KanariChainSpec::devnet(), dir.join("state.json")).expect("open");
-    let app = rpc::router(Arc::new(Mutex::new(node)));
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .expect("bind");
-    let url = format!("http://{}/", listener.local_addr().expect("addr"));
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("serve");
-    });
+    let (url, server) = serve(node).await;
     let client = reqwest::Client::new();
 
     let logs = rpc(

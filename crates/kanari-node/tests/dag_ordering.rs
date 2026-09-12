@@ -6,71 +6,73 @@
 //! the EVM executes that order. Final balances must match sequential
 //! execution of the committed sequence.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
-use alloy_eips::eip2718::Encodable2718;
+mod common;
+
 use alloy_primitives::{Bytes, TxKind, U256, address};
-use alloy_signer::Signer;
 use alloy_signer_local::PrivateKeySigner;
+use common::{GWEI_WEI, ONE_ETH_WEI, open_funded, sign_1559};
 use kanari_evm_consensus::ordering::DagOrdering;
-use kanari_evm_move_execution::{
-    DEV_FUNDED_BALANCE, KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, KanariChainSpec,
-    KanariNode,
-};
+use kanari_evm_move_execution::DEV_FUNDED_BALANCE;
 use std::collections::HashSet;
 
-const ONE_ETH_WEI: u128 = 1_000_000_000_000_000_000;
-const GWEI_WEI: u128 = 1_000_000_000;
-const GAS_LIMIT: u64 = 21_000;
-
-fn signed_transfer(
-    signer: &PrivateKeySigner,
-    nonce: u64,
-    to: alloy_primitives::Address,
-    rt: &tokio::runtime::Runtime,
-) -> Vec<u8> {
-    let tx = TxEip1559 {
-        chain_id: KANARI_EVM_DEV_CHAIN_ID,
-        nonce,
-        gas_limit: GAS_LIMIT,
-        to: TxKind::Call(to),
-        value: U256::from(ONE_ETH_WEI),
-        input: Bytes::new(),
-        access_list: Default::default(),
-        max_fee_per_gas: GWEI_WEI,
-        max_priority_fee_per_gas: GWEI_WEI,
-    };
-    let sig = rt
-        .block_on(signer.sign_hash(&tx.signature_hash()))
-        .expect("sign");
-    let envelope = TxEnvelope::from(tx.into_signed(sig));
-    let mut raw = Vec::new();
-    envelope.encode_2718(&mut raw);
-    raw
-}
-
-#[test]
-fn dag_orders_evm_transfers_for_execution() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-
+#[tokio::test]
+async fn dag_orders_evm_transfers_for_execution() {
     // Two funded signers, two transfers each (sequential nonces).
     let signer_a = PrivateKeySigner::random();
     let signer_b = PrivateKeySigner::random();
     let recipient = address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
-    let spec = KanariChainSpec::with_alloc(
-        KANARI_EVM_DEV_CHAIN_ID,
-        KANARI_EVM_GENESIS_SPEC,
-        vec![
+    let (mut node, dir) = open_funded(
+        "dag",
+        &[
             (signer_a.address(), U256::from(DEV_FUNDED_BALANCE)),
             (signer_b.address(), U256::from(DEV_FUNDED_BALANCE)),
         ],
     );
-    let tx_a0 = signed_transfer(&signer_a, 0, recipient, &rt);
-    let tx_a1 = signed_transfer(&signer_a, 1, recipient, &rt);
-    let tx_b0 = signed_transfer(&signer_b, 0, recipient, &rt);
-    let tx_b1 = signed_transfer(&signer_b, 1, recipient, &rt);
+    let value = U256::from(ONE_ETH_WEI);
+    let tx_a0 = sign_1559(
+        &signer_a,
+        TxKind::Call(recipient),
+        Bytes::new(),
+        0,
+        21_000,
+        GWEI_WEI,
+        value,
+    )
+    .await
+    .to_vec();
+    let tx_a1 = sign_1559(
+        &signer_a,
+        TxKind::Call(recipient),
+        Bytes::new(),
+        1,
+        21_000,
+        GWEI_WEI,
+        value,
+    )
+    .await
+    .to_vec();
+    let tx_b0 = sign_1559(
+        &signer_b,
+        TxKind::Call(recipient),
+        Bytes::new(),
+        0,
+        21_000,
+        GWEI_WEI,
+        value,
+    )
+    .await
+    .to_vec();
+    let tx_b1 = sign_1559(
+        &signer_b,
+        TxKind::Call(recipient),
+        Bytes::new(),
+        1,
+        21_000,
+        GWEI_WEI,
+        value,
+    )
+    .await
+    .to_vec();
     let submitted: HashSet<Vec<u8>> = [tx_a0.clone(), tx_a1.clone(), tx_b0.clone(), tx_b1.clone()]
         .into_iter()
         .collect();
@@ -108,15 +110,12 @@ fn dag_orders_evm_transfers_for_execution() {
     }
 
     // Execute the committed order on the EVM and check final balances.
-    let dir = std::env::temp_dir().join(format!("kanari-evm-dag-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
+    // (node opened above with both signers funded).
     for raw in &ordered {
         node.send_raw_transaction(raw.clone().into())
             .expect("ordered tx executes");
     }
-    let fee_each = GAS_LIMIT as u128 * GWEI_WEI;
+    let fee_each = 21_000u128 * GWEI_WEI;
     assert_eq!(
         node.balance_of(signer_a.address()).expect("balance"),
         U256::from(DEV_FUNDED_BALANCE - 2 * ONE_ETH_WEI - 2 * fee_each)

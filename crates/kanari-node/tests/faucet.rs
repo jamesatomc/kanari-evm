@@ -4,21 +4,13 @@
 //! Faucet tests: node-funded drips seal like normal transactions, the
 //! per-request cap is enforced, and missing keys fail closed.
 
+mod common;
+
+use common::eth;
 use kanari_evm_move_execution::{
-    KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, KanariChainSpec, KanariNode, WEI_IN_ETH,
+    KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, KanariChainSpec, KanariNode,
     generate_faucet_key,
 };
-
-fn eth(n: u128) -> alloy_primitives::U256 {
-    alloy_primitives::U256::from(n * WEI_IN_ETH)
-}
-
-fn fresh_state(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("kanari-evm-faucet-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    dir.join("state.json")
-}
 
 #[test]
 fn faucet_drips_seal_and_cap_enforced() {
@@ -29,7 +21,7 @@ fn faucet_drips_seal_and_cap_enforced() {
         KANARI_EVM_GENESIS_SPEC,
         vec![(faucet_addr, eth(1_000_000))],
     );
-    let state = fresh_state("drip");
+    let state = common::temp_dir("faucet-drip").join("state.json");
     let mut node = KanariNode::open(spec, &state).expect("open");
     node.set_faucet_key(faucet_secret).expect("set key");
     assert_eq!(
@@ -76,7 +68,7 @@ fn faucet_drips_seal_and_cap_enforced() {
 #[test]
 fn faucet_without_key_fails_closed() {
     let user = alloy_primitives::address!("70997970C51812dc3A010C7d01b50e0d17dc79C8");
-    let state = fresh_state("nokey");
+    let state = common::temp_dir("faucet-nokey").join("state.json");
     let mut node = KanariNode::open(KanariChainSpec::devnet(), &state).expect("open");
     assert!(!node.load_faucet_key().expect("load"));
     assert!(node.faucet(user, eth(1)).is_err());

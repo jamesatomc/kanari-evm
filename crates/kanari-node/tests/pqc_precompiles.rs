@@ -6,6 +6,9 @@
 //! the node executes a CALL to the precompile, and the 32-byte boolean output
 //! is asserted for both valid and tampered signatures.
 
+mod common;
+
+use common::temp_dir;
 use kanari_crypto::keys::{CurveType, generate_keypair};
 use kanari_evm_move_execution::{
     CallRequest, KanariChainSpec, KanariNode,
@@ -23,9 +26,7 @@ fn build_input(pubkey: &[u8], msg: &[u8], sig: &[u8]) -> Vec<u8> {
 }
 
 fn fresh_node(tag: &str) -> (KanariNode, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("kanari-evm-pqc-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    let dir = temp_dir(&format!("pqc-{tag}"));
     let file = dir.join("state.json");
     let node = KanariNode::open(KanariChainSpec::devnet(), &file).expect("open node");
     (node, dir)
