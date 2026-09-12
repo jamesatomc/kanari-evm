@@ -9,4 +9,4 @@
 pub mod db;
 pub mod store;
 
-pub use store::{ChainStore, SealedBlock, StoreError, StoredLog, StoredReceipt};
+pub use store::{ChainStore, SealedBlock, StoreError, StoredLog, StoredReceipt, chain_db_dir};

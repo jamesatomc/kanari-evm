@@ -7,9 +7,7 @@
 //! is generated on fresh state and persisted in the chain store so restarts
 //! keep working.
 
-use crate::node::{
-    KanariNode, MAX_FAUCET_ETH_PER_REQUEST, NodeError, WEI_IN_ETH,
-};
+use crate::node::{KanariNode, MAX_FAUCET_ETH_PER_REQUEST, NodeError, WEI_IN_ETH};
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, TxKind as AlloyTxKind, U256};
@@ -107,7 +105,7 @@ fn signer_address(signer: &PrivateKeySigner) -> Address {
 /// Parse a legacy faucet sidecar file (64-char hex, `0x` prefix tolerated).
 pub(crate) fn parse_faucet_hex_file(path: &Path) -> Result<B256, NodeError> {
     let raw = std::fs::read_to_string(path).map_err(|e| NodeError::Storage(e.to_string()))?;
-    let bytes =
-        kanari_evm_types::hex_decode32(&raw).map_err(|_| NodeError::Storage("malformed faucet key file".to_string()))?;
+    let bytes = kanari_evm_types::hex_decode32(&raw)
+        .map_err(|_| NodeError::Storage("malformed faucet key file".to_string()))?;
     Ok(B256::from_slice(&bytes))
 }

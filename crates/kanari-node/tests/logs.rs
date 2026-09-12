@@ -25,7 +25,16 @@ async fn logs_flow_from_receipt_to_get_logs() {
 
     // Block 1: deploy the LOG contract.
     let init = contracts::deploy_init(LOG_RUNTIME);
-    let deploy_raw = sign_1559(&funder, TxKind::Create, init.into(), 0, 1_000_000, GWEI_WEI, U256::ZERO).await;
+    let deploy_raw = sign_1559(
+        &funder,
+        TxKind::Create,
+        init.into(),
+        0,
+        1_000_000,
+        GWEI_WEI,
+        U256::ZERO,
+    )
+    .await;
     let deploy_hash = node.send_raw_transaction(deploy_raw).expect("deploy seals");
     let deploy_receipt = node.receipt(&deploy_hash).expect("receipt");
     assert!(deploy_receipt.success);
@@ -150,4 +159,3 @@ async fn logs_flow_from_receipt_to_get_logs() {
     server.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
-

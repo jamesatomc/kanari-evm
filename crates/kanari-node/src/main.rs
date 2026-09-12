@@ -33,6 +33,8 @@ use kanari_evm_rpc::rpc;
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
 
+use kanari_evm_node::fork;
+
 const WEI_IN_ETH: u128 = 1_000_000_000_000_000_000;
 const DEFAULT_FAUCET_ETH: u128 = 100;
 
@@ -319,6 +321,42 @@ enum Commands {
         #[arg(long, value_enum)]
         log_level: Option<LogLevel>,
     },
+    /// Checkpoint-fork a live chain: snapshot listed accounts (balance,
+    /// code, chosen storage slots) at one remote block into genesis, then
+    /// run fully local and deterministic. NOT a live fork — unlisted
+    /// storage starts empty (see fork.rs).
+    Fork {
+        /// Source JSON-RPC URL (any Ethereum RPC). Required on fresh fork,
+        /// optional on reopen (state replays from disk).
+        #[arg(long)]
+        rpc_url: Option<String>,
+        /// Remote block: `latest` or a `0x` block number.
+        #[arg(long, default_value = "latest")]
+        block: String,
+        /// Account to import, repeatable: `--account 0xAddr`.
+        #[arg(long)]
+        account: Vec<String>,
+        /// Storage slot to import, repeatable: `--slot 0xAddr:0xSlot`.
+        #[arg(long)]
+        slot: Vec<String>,
+        /// Data directory for chain state (defaults to ~/.kanari/evm-fork).
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+        /// JSON-RPC listen port.
+        #[arg(long, default_value = "8545")]
+        rpc_port: u16,
+        /// JSON-RPC listen host/IP.
+        #[arg(long, default_value = "127.0.0.1")]
+        rpc_host: String,
+        /// Pin the dev faucet account to your own 32-byte hex secret.
+        /// (Fork genesis test-mints it 1M ETH like Anvil defaults, since a
+        /// fork has no dev account to fund from.)
+        #[arg(long)]
+        faucet_key: Option<String>,
+        /// Log verbosity (tracing).
+        #[arg(long, value_enum, default_value = "info")]
+        log_level: LogLevel,
+    },
 }
 
 fn default_data_dir() -> std::path::PathBuf {
@@ -381,7 +419,24 @@ struct StartOptions {
     faucets: Vec<(Address, u128)>,
     faucet_key: Option<B256>,
     log_level: LogLevel,
+    /// Fork imports: chain id override + code/storage genesis extras.
+    /// Empty/None on fresh chains.
+    chain_id_override: Option<u64>,
+    genesis_extra: ForkGenesisExtra,
 }
+
+/// Fork-imported genesis pieces beyond the faucet-style alloc list.
+#[derive(Default)]
+struct ForkGenesisExtra {
+    /// Exact-wei allocations (no whole-ETH rounding).
+    alloc: Vec<(Address, U256)>,
+    code: Vec<(Address, alloy_primitives::Bytes)>,
+    storage: Vec<(Address, U256, U256)>,
+}
+
+/// Test-minted faucet funding for fork genesis (Anvil-defaults style: a
+/// fork has no dev account to fund the faucet from).
+const FORK_FAUCET_ETH: u128 = 1_000_000;
 
 fn parse_secret(hex: &str) -> B256 {
     hex.trim()
@@ -424,7 +479,7 @@ async fn run(opts: StartOptions) {
     // Genesis holds the FULL supply at the dev account only. The faucet gets
     // NO genesis allocation: fund it with a plain transfer from the dev
     // account before dripping (dev key: Anvil default #0).
-    let spec = if opts.faucets.is_empty() {
+    let mut spec = if opts.faucets.is_empty() {
         KanariChainSpec::devnet()
     } else {
         if !fresh {
@@ -438,6 +493,16 @@ async fn run(opts: StartOptions) {
         }
         KanariChainSpec::with_alloc(KANARI_EVM_DEV_CHAIN_ID, KANARI_EVM_GENESIS_SPEC, alloc)
     };
+    // Fork imports ride along: remote chain id + deployed code + storage.
+    // Fresh-state only (reopens replay the stored chain as usual).
+    if fresh {
+        if let Some(chain_id) = opts.chain_id_override {
+            spec.chain_id = chain_id;
+        }
+        spec.genesis_alloc.extend(opts.genesis_extra.alloc);
+        spec.genesis_code = opts.genesis_extra.code;
+        spec.genesis_storage = opts.genesis_extra.storage;
+    }
 
     let mut node = KanariNode::open(spec, &state_file)
         .unwrap_or_else(|e| fatal(&format!("failed to open node: {e}")));
@@ -503,6 +568,108 @@ async fn serve_rpc(shared: SharedNode, rpc_host: &str, rpc_port: u16) {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap_or_else(|e| fatal(&format!("server error: {e}")));
+}
+
+fn default_fork_dir() -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        std::path::PathBuf::from(home)
+            .join(".kanari")
+            .join("evm-fork")
+    } else {
+        std::path::PathBuf::from("./.kanari-evm-fork")
+    }
+}
+
+struct ForkOptions {
+    rpc_url: Option<String>,
+    block: String,
+    accounts: Vec<Address>,
+    slots: Vec<fork::SlotRef>,
+    data_dir: std::path::PathBuf,
+    state_file: std::path::PathBuf,
+    rpc_port: u16,
+    rpc_host: String,
+    faucet_key: Option<B256>,
+    log_level: LogLevel,
+}
+
+async fn run_fork(opts: ForkOptions) {
+    init_logging(opts.log_level.as_str()).unwrap_or_else(|e| fatal(&e));
+    let fresh = !opts.state_file.exists();
+
+    // Reopen: chain id comes from the store (no fetch needed, flags optional).
+    // Fresh: fetch everything from the remote endpoint.
+    let (chain_id, mut alloc, code, storage) = if fresh {
+        let rpc_url = opts
+            .rpc_url
+            .clone()
+            .unwrap_or_else(|| fatal("fresh fork needs --rpc-url (reopen skips fetching)"));
+        println!("fetching fork state from {rpc_url} @ {} ...", opts.block);
+        let client = reqwest::Client::new();
+        let forked =
+            fork::fetch_fork_genesis(&client, &rpc_url, &opts.block, &opts.accounts, &opts.slots)
+                .await
+                .unwrap_or_else(|e| fatal(&format!("fork fetch failed: {e}")));
+        println!(
+            "imported {} accounts ({} with code) + {} slots, chain id {}",
+            forked.alloc.len(),
+            forked.code.len(),
+            forked.storage.len(),
+            forked.chain_id
+        );
+        (forked.chain_id, forked.alloc, forked.code, forked.storage)
+    } else {
+        let store = kanari_evm_storage::ChainStore::open(kanari_evm_storage::chain_db_dir(
+            &opts.state_file,
+        ))
+        .unwrap_or_else(|e| fatal(&format!("failed to open store: {e}")));
+        let chain_id = store
+            .stored_chain_id()
+            .unwrap_or_else(|e| fatal(&format!("failed to read store: {e}")))
+            .unwrap_or_else(|| fatal("chain database missing chain id"));
+        println!("reopening fork chain {chain_id} (no fetching)");
+        (chain_id, Vec::new(), Vec::new(), Vec::new())
+    };
+
+    // Faucet: shared key or fresh. On fresh forks it is TEST-MINTED 1M ETH
+    // (Anvil-defaults style) since there is no dev account to fund from.
+    let faucet_secret: B256 = match opts.faucet_key {
+        Some(secret) => {
+            PrivateKeySigner::from_bytes(&secret)
+                .unwrap_or_else(|_| fatal("invalid --faucet-key secret"));
+            eprintln!("kanari-evm-node: WARNING: faucet key from command line (dev only!)");
+            secret
+        }
+        None => generate_faucet_key().1,
+    };
+    let faucet_addr = PrivateKeySigner::from_bytes(&faucet_secret)
+        .unwrap_or_else(|e| fatal(&format!("bad faucet key: {e}")))
+        .address();
+    if fresh {
+        alloc.push((
+            faucet_addr,
+            U256::from(FORK_FAUCET_ETH.saturating_mul(WEI_IN_ETH)),
+        ));
+    }
+    println!("fork faucet account (dev only): {faucet_addr}");
+
+    run(StartOptions {
+        network: NetworkMode::Devnet,
+        rpc_port: opts.rpc_port,
+        rpc_host: opts.rpc_host,
+        data_dir: opts.data_dir,
+        state_file: opts.state_file,
+        faucets: vec![(faucet_addr, FORK_FAUCET_ETH)],
+        faucet_key: Some(faucet_secret),
+        log_level: LogLevel::Info,
+        chain_id_override: Some(chain_id),
+        genesis_extra: ForkGenesisExtra {
+            alloc,
+            code,
+            storage,
+        },
+    })
+    .await;
 }
 
 fn cmd_reset(data_dir: Option<std::path::PathBuf>, force: bool) {
@@ -681,6 +848,8 @@ async fn main() {
                 faucets: parse_faucet_args(&faucet),
                 faucet_key: faucet_key.as_deref().map(parse_secret),
                 log_level,
+                chain_id_override: None,
+                genesis_extra: ForkGenesisExtra::default(),
             })
             .await;
         }
@@ -700,6 +869,8 @@ async fn main() {
                 faucets: Vec::new(),
                 faucet_key: None,
                 log_level,
+                chain_id_override: None,
+                genesis_extra: ForkGenesisExtra::default(),
             })
             .await;
         }
@@ -710,6 +881,44 @@ async fn main() {
             host,
             base_dag_port,
         } => cmd_keygen(node_count, output_dir, &host, base_dag_port),
+        Commands::Fork {
+            rpc_url,
+            block,
+            account,
+            slot,
+            data_dir,
+            rpc_port,
+            rpc_host,
+            faucet_key,
+            log_level,
+        } => {
+            let accounts = account
+                .iter()
+                .map(|a| {
+                    Address::from_str(a.trim())
+                        .unwrap_or_else(|_| fatal(&format!("invalid --account address: {a}")))
+                })
+                .collect::<Vec<_>>();
+            let slots = slot
+                .iter()
+                .map(|s| fork::parse_slot(s).unwrap_or_else(|e| fatal(&e)))
+                .collect::<Vec<_>>();
+            let data_dir = data_dir.unwrap_or_else(default_fork_dir);
+            let state_file = data_dir.join("state.json");
+            run_fork(ForkOptions {
+                rpc_url,
+                block,
+                accounts,
+                slots,
+                data_dir,
+                state_file,
+                rpc_port,
+                rpc_host,
+                faucet_key: faucet_key.as_deref().map(parse_secret),
+                log_level,
+            })
+            .await;
+        }
         Commands::Validator {
             committee,
             key,

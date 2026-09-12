@@ -229,6 +229,101 @@ async fn eip7702_delegates_and_executes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Relay-sponsored EIP-7702 (the viem `signAuthorization` pattern): the
+/// USER signs only the authorization (never pays gas); a separate RELAYER
+/// submits and pays for the type-4 tx. Authority and sender nonces stay
+/// independent, so no nonce choreography is needed.
+#[tokio::test]
+async fn eip7702_relay_sponsored() {
+    let deployer = PrivateKeySigner::random();
+    let user = PrivateKeySigner::random();
+    let user_addr = user.address();
+    let relayer = PrivateKeySigner::random();
+    let relayer_addr = relayer.address();
+    let spec = KanariChainSpec::with_alloc(
+        KANARI_EVM_DEV_CHAIN_ID,
+        KANARI_EVM_GENESIS_SPEC,
+        vec![
+            (deployer.address(), U256::from(DEV_FUNDED_BALANCE)),
+            (user_addr, U256::from(DEV_FUNDED_BALANCE)),
+            (relayer_addr, U256::from(DEV_FUNDED_BALANCE)),
+        ],
+    );
+    let dir = std::env::temp_dir().join(format!("kanari-evm-7702r-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let mut node = KanariNode::open(spec, dir.join("state.json")).expect("open");
+
+    // Delegation target.
+    let init = contracts::deploy_init(contracts::SIMPLE_STORAGE_RUNTIME);
+    let deploy_hash = node
+        .send_raw_transaction(sign_tx(&deployer, create_tx(0, init)).await)
+        .expect("deploy seals");
+    let target = node
+        .receipt(&deploy_hash)
+        .expect("receipt")
+        .contract_address
+        .expect("created");
+
+    // USER (state nonce 0) authorizes the target; never sends a thing.
+    let auth = Authorization {
+        chain_id: U256::from(KANARI_EVM_DEV_CHAIN_ID),
+        address: target,
+        nonce: 0,
+    };
+    let auth_sig = user
+        .sign_hash(&auth.signature_hash())
+        .await
+        .expect("user signs auth");
+    let signed_auth = canonical_auth(auth, auth_sig);
+
+    // RELAYER (state nonce 0) pays for a type-4 tx calling the USER
+    // (now delegated): set(555) lands in the USER's storage.
+    let tx = TxEip7702 {
+        chain_id: KANARI_EVM_DEV_CHAIN_ID,
+        nonce: 0,
+        gas_limit: 500_000,
+        max_fee_per_gas: GWEI_WEI,
+        max_priority_fee_per_gas: GWEI_WEI,
+        to: user_addr,
+        value: U256::ZERO,
+        input: contracts::encode_set(555).into(),
+        access_list: Default::default(),
+        authorization_list: vec![signed_auth],
+    };
+    let sig = relayer
+        .sign_hash(&tx.signature_hash())
+        .await
+        .expect("relayer signs tx");
+    let envelope = TxEnvelope::from(tx.into_signed(sig));
+    let mut raw = Vec::new();
+    envelope.encode_2718(&mut raw);
+    let hash = node
+        .send_raw_transaction(raw.into())
+        .expect("relay 7702 seals");
+    let receipt = node.receipt(&hash).expect("receipt");
+    assert!(receipt.success, "relayed delegated call must succeed");
+    assert_eq!(receipt.from, relayer_addr, "relayer paid");
+
+    // Delegation sits on the USER, value in the USER's slot.
+    let code = node.code_of(user_addr).expect("code");
+    assert_eq!(&code[..3], &[0xef, 0x01, 0x00]);
+    assert_eq!(&code[3..], target.as_slice());
+    let out = node
+        .call(CallRequest {
+            from: Some(relayer_addr),
+            to: Some(user_addr),
+            data: Some(contracts::encode_get().into()),
+            gas: Some(100_000),
+            ..Default::default()
+        })
+        .expect("call");
+    assert!(out.success);
+    assert_eq!(word_to_u64(&out.output), 555);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Live end-to-end deploy against a running node:
 /// `KANARI_EVM_LIVE_RPC=http://127.0.0.1:8546 cargo test -p kanari-evm
 /// --test contracts live_ -- --nocapture`

@@ -110,5 +110,8 @@ Checklist per host:
 - `--log-level debug` for RPC traffic; Ctrl+C drains cleanly.
 - Validator TOML: `kanari-evm-node validator --config node1.toml`
   (see `ValidatorFileConfig` docs in `crates/kanari-node/src/main.rs`).
+- Checkpoint fork a live chain (snapshot, not live passthrough):
+  `kanari-evm-node fork --rpc-url https://eth.llamarpc.com --account 0xA0b8… --slot 0xA0b8…:0x0`
+  then reopen with the same `--data-dir` (no flags needed twice).
 - Live deploy test: `KANARI_EVM_LIVE_RPC=http://127.0.0.1:8545 cargo test
   -p kanari-evm-node --test contracts live_`.

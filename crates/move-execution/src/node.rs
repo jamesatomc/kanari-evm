@@ -58,6 +58,10 @@ pub enum NodeError {
         "unsupported transaction type (only legacy, EIP-2930, EIP-1559 and EIP-7702 are accepted)"
     )]
     UnsupportedTxType,
+    #[error(
+        "EIP-4844 blob transactions are not supported on this chain: there is no blob mempool or KZG commitment check here. Resubmit as EIP-1559 (type 2) or EIP-7702 (type 4) with the same nonce."
+    )]
+    UnsupportedBlobTransactions,
     #[error("signature recovery failed: {0}")]
     BadSignature(String),
     #[error("wrong chain id: tx for {0}, this chain is {1}")]
@@ -89,17 +93,9 @@ struct Journal {
 /// Directory holding the chain RocksDB, derived from the `--state-file`
 /// base path: `<base>.chain.db` (extension stripped, e.g.
 /// `kanari-evm-state.json` -> `kanari-evm-state.chain.db`).
-fn chain_db_dir(state_base: &Path) -> PathBuf {
-    let name = state_base
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("kanari-evm-state");
-    let stem = name.split('.').next().unwrap_or(name);
-    state_base
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("{stem}.chain.db"))
-}
+/// Single source in `storage` (the fork command re-derives it to read the
+/// stored chain id before opening).
+pub use kanari_evm_storage::chain_db_dir;
 
 /// Shared node handle: what the RPC router and the DAG validator both hold.
 pub type SharedNode = Arc<Mutex<KanariNode>>;

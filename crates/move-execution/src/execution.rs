@@ -9,10 +9,7 @@
 //! Reverted transactions are sealed with `success: false` (standard EVM
 //! semantics: gas is still charged and the nonce advances).
 
-use crate::node::{
-    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_CALL_GAS, KanariNode,
-    NodeError,
-};
+use crate::node::{BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, DEFAULT_CALL_GAS, KanariNode, NodeError};
 use crate::precompiles::{KanariEvmParams, build_kanari_evm};
 use crate::views::{block_hash, next_parent_hash};
 use alloy_consensus::{TxEnvelope, transaction::SignerRecoverable};
@@ -208,12 +205,15 @@ impl KanariNode {
     ) -> Result<B256, NodeError> {
         let prepared = PreparedTx::decode(&raw, self.spec.chain_id)?;
         let parent_hash = next_parent_hash(&self.blocks);
-        let mut evm = self.evm_for_block_with_fee(number, timestamp, base_fee);
-        let output = evm
-            .transact(prepared.tx_env())
-            .map_err(|e| NodeError::Execution(e.to_string()))?;
-        self.db.commit(output.state);
-        let (success, gas_used, created, logs) = execution_summary(&output.result);
+        let result = transact_raw(
+            &mut self.db,
+            &self.spec,
+            &prepared,
+            number,
+            timestamp,
+            base_fee,
+        )?;
+        let (success, gas_used, created, logs) = execution_summary(&result);
         // Kanari fee policy: NO burn. revm already credited the priority fee
         // to the beneficiary during execution; the base-fee share
         // (`gas_used * base_fee`, destroyed by vanilla EIP-1559) is credited
@@ -303,14 +303,14 @@ impl CallResult {
 }
 
 /// A validated transaction ready for revm.
-struct PreparedTx {
-    sender: Address,
-    to: Option<Address>,
-    inner: TxEnv,
+pub(crate) struct PreparedTx {
+    pub(crate) sender: Address,
+    pub(crate) to: Option<Address>,
+    pub(crate) inner: TxEnv,
 }
 
 impl PreparedTx {
-    fn decode(raw: &[u8], chain_id: u64) -> Result<Self, NodeError> {
+    pub(crate) fn decode(raw: &[u8], chain_id: u64) -> Result<Self, NodeError> {
         let envelope = TxEnvelope::decode_2718_exact(raw)
             .map_err(|e| NodeError::InvalidTransaction(e.to_string()))?;
         let sender = envelope
@@ -391,7 +391,7 @@ impl PreparedTx {
                 (tx.chain_id, inner)
             }
             TxEnvelope::Eip4844(_) => {
-                return Err(NodeError::UnsupportedTxType);
+                return Err(NodeError::UnsupportedBlobTransactions);
             }
         };
         if tx_chain_id != chain_id {
@@ -404,9 +404,42 @@ impl PreparedTx {
         Ok(Self { sender, to, inner })
     }
 
-    fn tx_env(&self) -> TxEnv {
+    pub(crate) fn tx_env(&self) -> TxEnv {
         self.inner.clone()
     }
+}
+
+/// Execute one validated transaction against ANY database (live or
+/// scratch) and commit the resulting state into it. The seal path and the
+/// historical tracer share this: same inputs always produce the same
+/// `ExecutionResult`, which is what keeps traces honest and validators
+/// convergent.
+pub(crate) fn transact_raw(
+    db: &mut InMemoryDB,
+    spec: &crate::chainspec::KanariChainSpec,
+    prepared: &PreparedTx,
+    number: u64,
+    timestamp: u64,
+    base_fee: u64,
+) -> Result<ExecutionResult, NodeError> {
+    use crate::precompiles::build_kanari_evm;
+    let mut evm = build_kanari_evm(
+        db,
+        KanariEvmParams {
+            chain_id: spec.chain_id,
+            spec: spec.spec_id,
+            number,
+            timestamp,
+            basefee: base_fee,
+            gas_limit: BLOCK_GAS_LIMIT,
+            beneficiary: BLOCK_BENEFICIARY,
+        },
+    );
+    let output = evm
+        .transact(prepared.tx_env())
+        .map_err(|e| NodeError::Execution(e.to_string()))?;
+    db.commit(output.state);
+    Ok(output.result)
 }
 
 fn alloy_kind(to: &AlloyTxKind) -> RevmTxKind {
@@ -441,7 +474,7 @@ fn execution_summary(out: &ExecutionResult) -> (bool, u64, Option<Address>, Vec<
     }
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -33,6 +33,7 @@ documentation = "https://docs.kanarinetwork.site"
 # storage, networking) remains a Linux CI/docker target; revisit the
 # `reth-node-builder` git dependency then.
 revm = "43.0.2"
+revm-inspector = "43.0.2"
 kanari-crypto = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 smt = { git = "https://github.com/jamesatomc/kanari-sdk.git", rev = "a620725ce036dd2dbff54ac86ea562806480963b" }
 # Mysticeti DAG consensus as the ordering layer (in-process cores for tests;

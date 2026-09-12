@@ -3342,6 +3342,7 @@ dependencies = [
  "kanari-evm-storage",
  "kanari-evm-types",
  "revm",
+ "revm-inspector",
  "serde",
  "serde_json",
  "smt",

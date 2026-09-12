@@ -9,8 +9,9 @@
 //! spec in a follow-up phase.
 
 use revm::{
+    bytecode::Bytecode,
     database::InMemoryDB,
-    primitives::{Address, U256, address, hardfork::SpecId},
+    primitives::{Address, Bytes, U256, address, hardfork::SpecId},
     state::AccountInfo,
 };
 
@@ -44,6 +45,12 @@ pub struct KanariChainSpec {
     pub spec_id: SpecId,
     /// Genesis allocations as (address, balance in wei).
     pub genesis_alloc: Vec<(Address, U256)>,
+    /// Deployed contracts as (address, runtime bytecode). Applied after
+    /// balances (used by fork-mode imports; empty on fresh chains).
+    pub genesis_code: Vec<(Address, Bytes)>,
+    /// Storage slots as (address, slot, value). Applied after code (used
+    /// by fork-mode imports; empty on fresh chains).
+    pub genesis_storage: Vec<(Address, U256, U256)>,
     /// Base fee (wei) of the genesis block. Block 1+ adjust from here by
     /// EIP-1559 dynamics; tune per environment (LAN devnets can start lower).
     pub base_fee_wei: u128,
@@ -56,6 +63,8 @@ impl KanariChainSpec {
             chain_id: KANARI_EVM_DEV_CHAIN_ID,
             spec_id: KANARI_EVM_GENESIS_SPEC,
             genesis_alloc: vec![(DEV_FUNDED_ACCOUNT, U256::from(DEV_FUNDED_BALANCE))],
+            genesis_code: Vec::new(),
+            genesis_storage: Vec::new(),
             base_fee_wei: GENESIS_BASE_FEE_WEI,
         }
     }
@@ -66,6 +75,8 @@ impl KanariChainSpec {
             chain_id,
             spec_id,
             genesis_alloc,
+            genesis_code: Vec::new(),
+            genesis_storage: Vec::new(),
             base_fee_wei: GENESIS_BASE_FEE_WEI,
         }
     }
@@ -79,16 +90,50 @@ impl KanariChainSpec {
     /// Writes genesis allocations into an in-memory database.
     pub fn apply_genesis(&self, db: &mut InMemoryDB) {
         for (address, balance) in &self.genesis_alloc {
+            let code = self
+                .genesis_code
+                .iter()
+                .find(|(a, _)| a == address)
+                .map(|(_, c)| Bytecode::new_raw(c.clone()))
+                .filter(|bc| !bc.is_empty());
+            let (code_hash, code) = match code {
+                Some(bc) => (bc.hash_slow(), Some(bc)),
+                None => (revm::primitives::KECCAK_EMPTY, None),
+            };
             db.insert_account_info(
                 *address,
                 AccountInfo {
                     balance: *balance,
                     nonce: 0,
-                    code_hash: revm::primitives::KECCAK_EMPTY,
+                    code_hash,
                     account_id: None,
-                    code: None,
+                    code,
                 },
             );
+        }
+        // Contracts with no balance entry (zero-balance code accounts).
+        for (address, code) in &self.genesis_code {
+            if code.is_empty() || self.genesis_alloc.iter().any(|(a, _)| a == address) {
+                continue;
+            }
+            let bytecode = Bytecode::new_raw(code.clone());
+            db.insert_account_info(
+                *address,
+                AccountInfo {
+                    balance: U256::ZERO,
+                    nonce: 0,
+                    code_hash: bytecode.hash_slow(),
+                    account_id: None,
+                    code: Some(bytecode),
+                },
+            );
+        }
+        for (address, slot, value) in &self.genesis_storage {
+            // Infallible in practice: the exterior database is empty and the
+            // account entry is created on demand. `expect` keeps `apply_genesis`
+            // total (genesis building has no partial-failure semantics).
+            db.insert_account_storage(*address, *slot, *value)
+                .expect("in-memory genesis storage insert");
         }
     }
 }

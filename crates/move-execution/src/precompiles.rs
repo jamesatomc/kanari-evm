@@ -193,6 +193,57 @@ pub fn build_kanari_evm(
     }
 }
 
+/// Traced Kanari EVM: same interpreter + precompiles, pluggable inspector
+/// (e.g. revm's EIP-3155 tracer for `debug_trace*`).
+pub type KanariTracedEvm<'db, INSP> = Evm<
+    MainnetContext<&'db mut InMemoryDB>,
+    INSP,
+    EthInstructions<EthInterpreter, MainnetContext<&'db mut InMemoryDB>>,
+    KanariPrecompiles,
+    EthFrame<EthInterpreter>,
+>;
+
+/// Build a traced Kanari EVM over a borrowed database. Unbounded generic:
+/// `InspectEvm` bounds are checked where the tracer actually runs.
+pub fn build_kanari_evm_traced<'db, INSP>(
+    db: &'db mut InMemoryDB,
+    params: KanariEvmParams,
+    inspector: INSP,
+) -> KanariTracedEvm<'db, INSP> {
+    use revm::primitives::U256;
+    let KanariEvmParams {
+        chain_id,
+        spec,
+        number,
+        timestamp,
+        basefee,
+        gas_limit,
+        beneficiary,
+    } = params;
+    let ctx = Context::mainnet()
+        .with_db(db)
+        .modify_cfg_chained(|cfg| {
+            cfg.chain_id = chain_id;
+            cfg.spec = spec;
+        })
+        .modify_block_chained(|block| {
+            block.number = U256::from(number);
+            block.timestamp = U256::from(timestamp);
+            block.beneficiary = beneficiary;
+            block.basefee = basefee;
+            block.gas_limit = gas_limit;
+            block.difficulty = U256::ZERO;
+            block.prevrandao = Some(revm::primitives::B256::ZERO);
+        });
+    Evm {
+        ctx,
+        inspector,
+        instruction: EthInstructions::new_mainnet_with_spec(spec),
+        precompiles: KanariPrecompiles::new(spec),
+        frame_stack: FrameStack::new_prealloc(8),
+    }
+}
+
 fn falcon512_verify_run(input: &[u8], gas_limit: u64) -> EthPrecompileResult {
     run_pqc_verify(
         input,

@@ -25,6 +25,7 @@ pub mod faucet;
 pub mod node;
 pub mod precompiles;
 pub mod state;
+pub mod trace;
 pub mod views;
 
 pub use chainspec::{
@@ -34,10 +35,11 @@ pub use chainspec::{
 pub use execution::CallRequest;
 pub use faucet::generate_faucet_key;
 pub use node::{
-    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, KanariNode,
-    MAX_FAUCET_ETH_PER_REQUEST, NodeMetrics, SharedNode, WEI_IN_ETH, calc_next_base_fee,
+    BLOCK_BENEFICIARY, BLOCK_GAS_LIMIT, KanariNode, MAX_FAUCET_ETH_PER_REQUEST, NodeError,
+    NodeMetrics, SharedNode, WEI_IN_ETH, calc_next_base_fee,
 };
 pub use state::SmtProof;
+pub use trace::{TraceOptions, TraceOutput};
 pub use views::{SealedLog, render_sealed_log};
 
 #[cfg(test)]
@@ -118,6 +120,18 @@ mod tests {
         assert_eq!(
             sender.balance,
             U256::from(DEV_FUNDED_BALANCE) - U256::from(ONE_ETH_WEI) - U256::from(21_000u64)
+        );
+    }
+
+    #[test]
+    fn blob_rejection_points_to_supported_types() {
+        // EIP-4844 has no blob mempool here; the error must say so and tell
+        // the caller what to resubmit instead of a bare "unsupported".
+        let msg = NodeError::UnsupportedBlobTransactions.to_string();
+        assert!(msg.contains("EIP-4844"), "names the rejected type: {msg}");
+        assert!(
+            msg.contains("EIP-1559") && msg.contains("EIP-7702"),
+            "points at supported types: {msg}"
         );
     }
 }

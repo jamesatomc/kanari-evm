@@ -128,7 +128,22 @@ arrays are accepted (wallets batch on load). Method coverage:
 
 Supported transaction types: legacy (protected), EIP-2930, EIP-1559 and
 EIP-7702 (self-sponsored nonces follow revm's validate-then-apply order:
-tx.nonce is pre-state, auth.nonce post-caller-bump). EIP-4844 is rejected.
+tx.nonce is pre-state, auth.nonce post-caller-bump; relay-sponsored flows
+work with independent nonces). EIP-4844 is rejected with a guided error
+(no blob mempool — resubmit as type 2/4).
+
+Execution traces: `debug_traceTransaction` replays sealed history into
+scratch state (genesis + prior blocks, stored block envs) and runs revm's
+EIP-3155 tracer over the full precompile set — historically accurate,
+opcode-for-opcode with sealed execution. `debug_traceCall` traces against
+current state. Only `disableStack`/`disableMemory` options; no custom
+tracers (use the struct logs).
+
+Checkpoint fork: `kanari-evm-node fork --rpc-url URL --account 0x..
+--slot 0xAddr:0xSlot` snapshots listed balances, code and slots at one
+remote block into genesis, then runs fully local. NOT a live fork:
+unlisted storage starts empty, and the faucet is test-minted (no dev
+account exists on a fork).
 
 Anything else returns `-32601 Method not found`. Block hashes are
 deterministic `keccak256(parent || number || timestamp)` placeholders —

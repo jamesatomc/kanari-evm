@@ -24,7 +24,10 @@
 use alloy_primitives::{Address, B256, Bytes, U256};
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// A sealed block: header-ish metadata plus raw transactions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +77,21 @@ pub struct StoredLog {
     pub topics: Vec<B256>,
     pub data: Bytes,
 }
+/// Directory holding the chain RocksDB, derived from the `--state-file`
+/// base path: `<base>.chain.db` (extension stripped, e.g.
+/// `kanari-evm-state.json` -> `kanari-evm-state.chain.db`).
+pub fn chain_db_dir(state_base: &Path) -> PathBuf {
+    let name = state_base
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("kanari-evm-state");
+    let stem = name.split('.').next().unwrap_or(name);
+    state_base
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{stem}.chain.db"))
+}
+
 /// Precompile-free key helpers live here so the layout stays in one place.
 mod keys {
     use alloy_primitives::B256;

@@ -239,8 +239,7 @@ fn encode_pubkey(key: &PublicKey) -> Result<String, CommitteeError> {
 }
 
 fn decode_pubkey(hex: &str) -> Result<PublicKey, String> {
-    let bytes =
-        kanari_evm_types::hex_decode32(hex).map_err(|e| format!("bad public key: {e}"))?;
+    let bytes = kanari_evm_types::hex_decode32(hex).map_err(|e| format!("bad public key: {e}"))?;
     PublicKey::from_bytes(bytes).map_err(|e| e.to_string())
 }
 

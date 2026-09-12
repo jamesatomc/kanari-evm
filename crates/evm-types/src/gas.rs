@@ -37,12 +37,15 @@ pub fn calc_next_base_fee(parent_fee_wei: u128, gas_used: u128, gas_limit: u128)
         return parent_fee_wei.max(MIN_BASE_FEE_WEI);
     }
     if gas_used > gas_target {
-        let delta =
-            parent_fee_wei.saturating_mul(gas_used - gas_target) / gas_target
-                / BASE_FEE_MAX_CHANGE_DENOMINATOR;
-        parent_fee_wei.saturating_add(delta.max(1)).max(MIN_BASE_FEE_WEI)
+        let delta = parent_fee_wei.saturating_mul(gas_used - gas_target)
+            / gas_target
+            / BASE_FEE_MAX_CHANGE_DENOMINATOR;
+        parent_fee_wei
+            .saturating_add(delta.max(1))
+            .max(MIN_BASE_FEE_WEI)
     } else {
-        let delta = parent_fee_wei.saturating_mul(gas_target - gas_used) / gas_target
+        let delta = parent_fee_wei.saturating_mul(gas_target - gas_used)
+            / gas_target
             / BASE_FEE_MAX_CHANGE_DENOMINATOR;
         parent_fee_wei.saturating_sub(delta).max(MIN_BASE_FEE_WEI)
     }

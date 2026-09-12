@@ -16,6 +16,7 @@ use axum::{
     routing::{get, post},
 };
 use kanari_evm_move_execution::{
+    TraceOptions,
     execution::CallRequest,
     node::{BLOCK_GAS_LIMIT, KanariNode, NodeError, SharedNode},
     render_sealed_log,
@@ -657,6 +658,49 @@ async fn dispatch_inner(node: &SharedNode, req: RpcRequest) -> RpcResponse {
                         ok(id, json!(kanari_evm_types::hex_prefixed(&out.output)))
                     }
                 }
+                Err(e) => node_error(id, e),
+            }
+        }
+        "debug_traceTransaction" => {
+            // params: [txHash, {disableStack?, disableMemory?}]. Re-executes
+            // the sealed tx at its exact historical state (see trace.rs).
+            let arr = params.as_array().cloned().unwrap_or_default();
+            let Some(hash_v) = arr.first() else {
+                return err(id, -32602, "want [txHash, options?]".to_string());
+            };
+            let hash = match parse_hash(hash_v) {
+                Ok(h) => h,
+                Err(e) => return err(id, -32602, e),
+            };
+            let opts = match arr.get(1).map(TraceOptions::from_json).transpose() {
+                Ok(o) => o.unwrap_or_default(),
+                Err(e) => return err(id, -32602, e),
+            };
+            let mut node = node.lock().await;
+            match node.trace_transaction(&hash, opts) {
+                Ok(trace) => ok(id, trace.to_json()),
+                Err(e) => node_error(id, e),
+            }
+        }
+        "debug_traceCall" => {
+            // params: [{...}, block?, {disableStack?, disableMemory?}].
+            // Always runs against current state (never seals).
+            let arr = params.as_array().cloned().unwrap_or_default();
+            if arr.is_empty() {
+                return err(id, -32602, "want [{...}, block?, options?]".to_string());
+            }
+            let obj = arr[0].as_object().cloned().unwrap_or_default();
+            let call = match call_request_from_json(&obj) {
+                Ok(c) => c,
+                Err(e) => return err(id, -32602, e),
+            };
+            let opts = match arr.get(2).map(TraceOptions::from_json).transpose() {
+                Ok(o) => o.unwrap_or_default(),
+                Err(e) => return err(id, -32602, e),
+            };
+            let mut node = node.lock().await;
+            match node.trace_call(call, opts) {
+                Ok(trace) => ok(id, trace.to_json()),
                 Err(e) => node_error(id, e),
             }
         }

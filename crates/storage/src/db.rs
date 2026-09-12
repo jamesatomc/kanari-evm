@@ -49,8 +49,9 @@ pub fn open_or_get_db(dir: impl AsRef<Path>) -> Result<Arc<DB>> {
         }
     }
 
-    std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
-        .map_err(|e| StoreError::Backend(format!("failed to create RocksDB parent directory: {e}")))?;
+    std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| {
+        StoreError::Backend(format!("failed to create RocksDB parent directory: {e}"))
+    })?;
 
     let mut opts = Options::default();
     opts.create_if_missing(true);
